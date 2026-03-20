@@ -35,6 +35,13 @@ export class PolicyEngine {
    */
   evaluate(request: PolicyRequest): PolicyDecision {
     const startTime = Date.now();
+
+    // Clear spend tracker evaluation cache so all rules in this cycle
+    // share cached DB reads instead of hitting the DB per-rule.
+    if (request.turnContext.sessionSpend && typeof request.turnContext.sessionSpend.clearEvaluationCache === "function") {
+      request.turnContext.sessionSpend.clearEvaluationCache();
+    }
+
     const applicableRules = this.rules.filter((rule) =>
       this.ruleApplies(rule, request),
     );
@@ -52,11 +59,17 @@ export class PolicyEngine {
       try {
         result = rule.evaluate(request);
       } catch (err) {
-        console.error("Policy rule evaluation failed", {
+        // Fail-closed: if a safety rule crashes, deny the action rather than
+        // silently allowing a potentially dangerous tool call through.
+        console.error("Policy rule evaluation failed — denying (fail-closed)", {
           ruleId: rule.id,
           error: err instanceof Error ? err.message : String(err),
         });
-        continue;
+        overallAction = "deny";
+        reasonCode = "RULE_EVALUATION_ERROR";
+        humanMessage = `Policy rule "${rule.id}" threw an error during evaluation. Denying for safety.`;
+        rulesTriggered.push(rule.id);
+        break;
       }
 
       if (result === null) {

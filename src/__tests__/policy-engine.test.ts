@@ -168,7 +168,7 @@ describe("PolicyEngine", () => {
     expect(decision.humanMessage).toBe("Blocked by test rule");
   });
 
-  it("continues evaluation when a rule throws (doesn't crash)", () => {
+  it("denies when a rule throws (fail-closed)", () => {
     const throwingRule = makeRule({
       id: "throws",
       priority: 10,
@@ -191,12 +191,13 @@ describe("PolicyEngine", () => {
     const engine = new PolicyEngine(db, [throwingRule, allowRule]);
     const decision = engine.evaluate(createRequest());
 
-    // Engine did not crash; it continued past the throwing rule
-    expect(decision.action).toBe("allow");
-    // The throwing rule was evaluated (attempted) but the after-throw rule also ran
+    // Fail-closed: throwing rule causes a deny, subsequent rules are not evaluated
+    expect(decision.action).toBe("deny");
+    expect(decision.reasonCode).toBe("RULE_EVALUATION_ERROR");
     expect(decision.rulesEvaluated).toContain("throws");
-    expect(decision.rulesEvaluated).toContain("after-throw");
-    expect(decision.rulesTriggered).toContain("after-throw");
+    expect(decision.rulesTriggered).toContain("throws");
+    // The after-throw rule should NOT have been evaluated (break on deny)
+    expect(decision.rulesEvaluated).not.toContain("after-throw");
 
     consoleSpy.mockRestore();
   });
@@ -227,7 +228,7 @@ describe("PolicyEngine", () => {
     engine.evaluate(createRequest());
 
     expect(consoleSpy).toHaveBeenCalledWith(
-      "Policy rule evaluation failed",
+      "Policy rule evaluation failed — denying (fail-closed)",
       expect.objectContaining({
         ruleId: "non-error-throw",
         error: "string-error",

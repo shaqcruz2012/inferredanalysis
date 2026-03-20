@@ -328,16 +328,16 @@ describe("SpendTracker", () => {
 
   describe("x402 limits", () => {
     it("uses x402-specific limits, not transfer limits", () => {
-      // Record some x402 spend
+      // maxX402PaymentCents is 500, so hourly = 500*10 = 5000
+      // Record enough x402 spend to exceed the hourly limit
       tracker.recordSpend({
         toolName: "x402_fetch",
-        amountCents: 900,
+        amountCents: 4900,
         domain: "conway.tech",
         category: "x402",
       });
 
-      // maxX402PaymentCents is 100, so hourly = 100*10 = 1000
-      // 900 + 200 = 1100 > 1000 should be denied
+      // 4900 + 200 = 5100 > 5000 should be denied
       const result = tracker.checkLimit(200, "x402", DEFAULT_TREASURY_POLICY);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain("Hourly");

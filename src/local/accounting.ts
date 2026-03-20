@@ -462,3 +462,99 @@ export function getLocalLedgerBalance(db: Database): number {
   const pnl = computePnl(db, "all");
   return pnl.netCents;
 }
+
+// ── Atomic Transfer Saga ────────────────────────────────────────
+
+export type TransferSagaState = "pending" | "chain_sent" | "recorded" | "failed";
+
+export interface TransferSagaRecord {
+  id: string;
+  state: TransferSagaState;
+  toAddress: string;
+  amountCents: number;
+  txHash?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const TRANSFER_SAGA_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS transfer_saga (
+    id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK(state IN ('pending','chain_sent','recorded','failed')),
+    to_address TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    tx_hash TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_transfer_saga_state ON transfer_saga(state);
+`;
+
+/**
+ * Ensure the transfer saga table exists. Call during DB init.
+ */
+export function initTransferSagaSchema(db: Database): void {
+  db.exec(TRANSFER_SAGA_SCHEMA);
+}
+
+/**
+ * Create a pending saga record BEFORE sending the on-chain transfer.
+ * If the process crashes after the chain tx but before ledger recording,
+ * recovery can find this record and reconcile.
+ */
+export function createTransferSaga(db: Database, opts: {
+  toAddress: string;
+  amountCents: number;
+}): string {
+  const id = ulid();
+  db.prepare(
+    `INSERT INTO transfer_saga (id, state, to_address, amount_cents)
+     VALUES (?, 'pending', ?, ?)`,
+  ).run(id, opts.toAddress, opts.amountCents);
+  return id;
+}
+
+/**
+ * Mark saga as chain_sent after the blockchain tx is confirmed.
+ */
+export function markSagaChainSent(db: Database, sagaId: string, txHash: string): void {
+  db.prepare(
+    `UPDATE transfer_saga SET state = 'chain_sent', tx_hash = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(txHash, sagaId);
+}
+
+/**
+ * Mark saga as fully recorded after the ledger entry is written.
+ */
+export function markSagaRecorded(db: Database, sagaId: string): void {
+  db.prepare(
+    `UPDATE transfer_saga SET state = 'recorded', updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(sagaId);
+}
+
+/**
+ * Mark saga as failed with an error message.
+ */
+export function markSagaFailed(db: Database, sagaId: string, error: string): void {
+  db.prepare(
+    `UPDATE transfer_saga SET state = 'failed', error = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(error, sagaId);
+}
+
+/**
+ * Find incomplete sagas (chain_sent but not recorded) for crash recovery.
+ * On startup, these can be reconciled by checking the tx hash on-chain
+ * and recording the ledger entry if the transfer succeeded.
+ */
+export function findIncompleteSagas(db: Database): TransferSagaRecord[] {
+  return db.prepare(
+    `SELECT id, state, to_address as toAddress, amount_cents as amountCents,
+            tx_hash as txHash, error, created_at as createdAt, updated_at as updatedAt
+     FROM transfer_saga WHERE state = 'chain_sent'`,
+  ).all() as TransferSagaRecord[];
+}

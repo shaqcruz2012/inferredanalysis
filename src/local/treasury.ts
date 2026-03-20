@@ -78,11 +78,17 @@ export interface BalanceResult {
   /** Whether the read succeeded */
   ok: boolean;
   error?: string;
+  /** Whether the result is from a stale cache (RPC failure) */
+  stale?: boolean;
+  /** Age of cached result in seconds (only set when stale) */
+  staleSec?: number;
 }
 
 /** Cache to avoid hammering the public RPC endpoint */
 let _balanceCache: { result: BalanceResult; timestamp: number } | null = null;
 const BALANCE_CACHE_TTL_MS = 60_000; // 60 seconds
+/** Maximum age before cache is considered dangerously stale */
+const BALANCE_CACHE_MAX_STALE_MS = 5 * 60_000; // 5 minutes
 
 /**
  * Read the agent's USDC balance on Base.
@@ -113,10 +119,20 @@ export async function getOnChainBalance(address: Address): Promise<BalanceResult
     _balanceCache = { result, timestamp: Date.now() };
     return result;
   } catch (err: any) {
-    // If we have a cached result, return it instead of failing
+    // If we have a cached result, return it with staleness info
     if (_balanceCache) {
-      logger.warn("RPC call failed, returning cached balance");
-      return _balanceCache.result;
+      const ageMs = Date.now() - _balanceCache.timestamp;
+      const ageSec = Math.floor(ageMs / 1000);
+      if (ageMs > BALANCE_CACHE_MAX_STALE_MS) {
+        logger.error(`RPC failed, returning STALE cached balance (${ageSec}s old) — treat as unreliable`);
+      } else {
+        logger.warn(`RPC call failed, returning cached balance (${ageSec}s old)`);
+      }
+      return {
+        ..._balanceCache.result,
+        stale: true,
+        staleSec: ageSec,
+      };
     }
     return {
       balanceUsd: 0,
@@ -157,6 +173,12 @@ export async function transferUSDC(
 ): Promise<TransferResult> {
   if (amountUsd <= 0) {
     return { success: false, amountUsd, toAddress: to, error: "Amount must be positive" };
+  }
+
+  // Prevent sending to the zero address (burn address)
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  if (to.toLowerCase() === ZERO_ADDRESS) {
+    return { success: false, amountUsd, toAddress: to, error: "Cannot transfer to zero address" };
   }
 
   try {

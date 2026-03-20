@@ -563,6 +563,8 @@ export interface SpendTrackerInterface {
   getTotalSpend(category: SpendCategory, since: Date): number;
   checkLimit(amount: number, category: SpendCategory, limits: TreasuryPolicy): LimitCheckResult;
   pruneOldRecords(retentionDays: number): number;
+  /** Clear per-evaluation cache. Called by PolicyEngine at start of each evaluation cycle. */
+  clearEvaluationCache?(): void;
 }
 
 export interface SpendEntry {
@@ -596,14 +598,14 @@ export interface TreasuryPolicy {
 }
 
 export const DEFAULT_TREASURY_POLICY: TreasuryPolicy = {
-  maxSingleTransferCents: 2000,        // $20 max per transfer
-  maxHourlyTransferCents: 5000,        // $50 max per hour
-  maxDailyTransferCents: 10000,        // $100 max per day
-  minimumReserveCents: 500,            // Keep $5 minimum reserve
-  maxX402PaymentCents: 500,            // $5 max for x402 payments
-  x402AllowedDomains: ["x402.org", "localhost"],
+  maxSingleTransferCents: 5000,        // $50 max per transfer
+  maxHourlyTransferCents: 10000,       // $100 max per hour
+  maxDailyTransferCents: 25000,        // $250 max per day
+  minimumReserveCents: 1000,           // Keep $10 minimum reserve
+  maxX402PaymentCents: 100,            // $1 max for x402 payments
+  x402AllowedDomains: ["x402.org", "conway.tech", "localhost"],
   transferCooldownMs: 0,
-  maxTransfersPerTurn: 5,
+  maxTransfersPerTurn: 2,
   maxInferenceDailyCents: 2000,        // $20 max daily inference spend
   requireConfirmationAboveCents: 1000, // Confirm transfers >$10
 };

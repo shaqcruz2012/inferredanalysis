@@ -88,6 +88,47 @@ export function loadConfig(): AutomatonConfig | null {
 }
 
 /**
+ * Validate that critical config fields are present.
+ * Throws on missing required fields so the agent fails fast at startup
+ * rather than encountering cryptic errors later.
+ */
+export function validateConfig(config: AutomatonConfig): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (!config.name || config.name.trim() === "") {
+    errors.push("Missing required field: name");
+  }
+  if (!config.walletAddress || config.walletAddress === ("0x" as Address)) {
+    errors.push("Missing required field: walletAddress");
+  }
+  if (!config.creatorAddress || config.creatorAddress === ("0x" as Address)) {
+    errors.push("Missing required field: creatorAddress");
+  }
+  if (!config.conwayApiKey && !config.openaiApiKey && !config.anthropicApiKey && !config.ollamaBaseUrl) {
+    errors.push("No inference provider configured: set at least one of conwayApiKey, openaiApiKey, anthropicApiKey, or ollamaBaseUrl");
+  }
+  if (!config.dbPath) {
+    errors.push("Missing required field: dbPath");
+  }
+
+  // Validate treasury policy consistency
+  const tp = config.treasuryPolicy;
+  if (tp) {
+    if (tp.maxHourlyTransferCents > tp.maxDailyTransferCents) {
+      errors.push(`Treasury policy inconsistency: maxHourlyTransferCents (${tp.maxHourlyTransferCents}) > maxDailyTransferCents (${tp.maxDailyTransferCents})`);
+    }
+  }
+
+  if (errors.length > 0) {
+    for (const err of errors) {
+      logger.error(`Config validation: ${err}`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+/**
  * Save the automaton config to disk.
  * Includes treasuryPolicy in the persisted config.
  */

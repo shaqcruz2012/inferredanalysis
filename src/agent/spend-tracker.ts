@@ -39,9 +39,20 @@ function getCurrentDayWindow(): string {
 
 export class SpendTracker implements SpendTrackerInterface {
   private db: Database.Database;
+  /**
+   * Per-evaluation cache to avoid redundant DB reads when multiple
+   * policy rules query the same spend category in one evaluation cycle.
+   * Call clearEvaluationCache() at the start of each policy evaluation.
+   */
+  private _evalCache: Map<string, number> = new Map();
 
   constructor(db: Database.Database) {
     this.db = db;
+  }
+
+  /** Clear the per-evaluation cache. Call at the start of each policy evaluation cycle. */
+  clearEvaluationCache(): void {
+    this._evalCache.clear();
   }
 
   recordSpend(entry: SpendEntry): void {
@@ -59,13 +70,25 @@ export class SpendTracker implements SpendTrackerInterface {
   }
 
   getHourlySpend(category: SpendCategory): number {
+    const cacheKey = `hourly:${category}`;
+    const cached = this._evalCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const window = getCurrentHourWindow();
-    return getSpendByWindow(this.db, category, "hour", window);
+    const result = getSpendByWindow(this.db, category, "hour", window);
+    this._evalCache.set(cacheKey, result);
+    return result;
   }
 
   getDailySpend(category: SpendCategory): number {
+    const cacheKey = `daily:${category}`;
+    const cached = this._evalCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const window = getCurrentDayWindow();
-    return getSpendByWindow(this.db, category, "day", window);
+    const result = getSpendByWindow(this.db, category, "day", window);
+    this._evalCache.set(cacheKey, result);
+    return result;
   }
 
   getTotalSpend(category: SpendCategory, since: Date): number {
