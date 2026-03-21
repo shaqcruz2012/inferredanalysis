@@ -58,6 +58,11 @@ export function momentumScan(priceArrays, lookbacks = [21, 63, 126, 252]) {
  * Scan for breakouts (new N-day highs/lows).
  */
 export function breakoutScan(priceArrays, lookback = 20) {
+  try {
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[breakoutScan] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const results = [];
 
   for (const [sym, prices] of Object.entries(priceArrays)) {
@@ -92,12 +97,18 @@ export function breakoutScan(priceArrays, lookback = 20) {
   }
 
   return results;
+  } catch (err) { console.error(`[breakoutScan] Failed: ${err.message}`); return []; }
 }
 
 /**
  * Scan for mean reversion opportunities.
  */
 export function meanReversionScan(priceArrays, options = {}) {
+  try {
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[meanReversionScan] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const { rsiPeriod = 14, bbPeriod = 20, bbStdDev = 2 } = options;
   const results = [];
 
@@ -146,12 +157,18 @@ export function meanReversionScan(priceArrays, options = {}) {
   }
 
   return results.sort((a, b) => Math.abs(b.reversionScore) - Math.abs(a.reversionScore));
+  } catch (err) { console.error(`[meanReversionScan] Failed: ${err.message}`); return []; }
 }
 
 /**
  * Scan for volatility regime.
  */
 export function volRegimeScan(priceArrays, shortWindow = 21, longWindow = 63) {
+  try {
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[volRegimeScan] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const results = [];
 
   for (const [sym, prices] of Object.entries(priceArrays)) {
@@ -191,6 +208,7 @@ export function volRegimeScan(priceArrays, shortWindow = 21, longWindow = 63) {
   }
 
   return results.sort((a, b) => b.volRatio - a.volRatio);
+  } catch (err) { console.error(`[volRegimeScan] Failed: ${err.message}`); return []; }
 }
 
 /**

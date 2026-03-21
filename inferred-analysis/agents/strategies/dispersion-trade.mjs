@@ -19,6 +19,11 @@ import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-va
  * Compute realized dispersion: cross-sectional standard deviation of returns.
  */
 export function realizedDispersion(priceArrays, window = 21) {
+  try {
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[realizedDispersion] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const symbols = Object.keys(priceArrays);
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const result = [];
@@ -63,6 +68,7 @@ export function realizedDispersion(priceArrays, window = 21) {
   }
 
   return result;
+  } catch (err) { console.error(`[realizedDispersion] Failed: ${err.message}`); return []; }
 }
 
 /**
@@ -79,7 +85,6 @@ export function dispersionSignals(priceArrays, options = {}) {
   }
   const { window = 21, highCorrThreshold = 0.7, lowCorrThreshold = 0.3 } = options;
   const dispData = realizedDispersion(priceArrays, window);
-  const symbols = Object.keys(priceArrays);
 
   return dispData.map(d => {
     let signal = 0;
