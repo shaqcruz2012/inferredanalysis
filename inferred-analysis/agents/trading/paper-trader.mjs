@@ -22,6 +22,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
+import { SmartOrderRouter } from "./smart-order-router.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");

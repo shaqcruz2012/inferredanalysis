@@ -311,8 +311,11 @@ export const DEFAULT_SYMBOLS = [
  * Better than pure random walk — mimics real equity behavior.
  *
  * WARNING: This function generates FAKE data. All callers should migrate to
- * import { getPrices } from "../data/data-source-manager.mjs" which will
- * automatically prefer real data and only fall back to synthetic as a last resort.
+ * import { fetchRealPrices } from "../data/real-data-collector.mjs" which fetches
+ * real market data from Yahoo Finance, FRED, and CoinGecko, falling back to
+ * synthetic only as a last resort.
+ *
+ * @deprecated Use fetchRealPrices() from real-data-collector.mjs instead.
  */
 export function generateRealisticPrices(symbol, startDate = "2020-01-01", endDate = "2025-03-01") {
   // Deprecation warning — emitted once per symbol per process to avoid log spam
@@ -321,7 +324,8 @@ export function generateRealisticPrices(symbol, startDate = "2020-01-01", endDat
     generateRealisticPrices._warned.add(symbol);
     console.warn(
       `  [DEPRECATED] generateRealisticPrices("${symbol}") called. ` +
-      `Use data-source-manager.getPrices() instead. Synthetic data will be removed in v2.0.`
+      `Migrate to: import { fetchRealPrices } from "./real-data-collector.mjs". ` +
+      `Synthetic data fallback will be removed in v2.0.`
     );
   }
 

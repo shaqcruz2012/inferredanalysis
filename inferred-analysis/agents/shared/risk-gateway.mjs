@@ -24,8 +24,6 @@ import { DrawdownAnalyzer, painIndex, ulcerIndex } from "../risk/drawdown-analyz
 import { componentVaR, concentrationRisk, diversificationRatio } from "../risk/risk-attribution.mjs";
 import { shouldTrade, getBreakerStatus } from "../risk/circuit-breaker.mjs";
 import { kellySize, volTargetSize, maxDrawdownSize } from "../risk/position-sizer.mjs";
-import { TailHedger, getHedgeRecommendation } from "../risk/tail-hedger.mjs";
-import { BayesianRiskModel, bayesianSharpe } from "../risk/bayesian-risk.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

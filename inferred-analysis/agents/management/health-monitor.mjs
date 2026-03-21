@@ -90,24 +90,19 @@ function log(msg) {
   console.error(line);
   try {
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
-    appendFileSync(HEALTH_LOG, line + "\n");
+    atomicAppendFile(HEALTH_LOG, line);
   } catch {}
 }
 
 // ─── Health History ──────────────────────────────────────
 
 function loadHistory() {
-  try {
-    if (existsSync(HEALTH_HISTORY_FILE)) {
-      return JSON.parse(readFileSync(HEALTH_HISTORY_FILE, "utf-8"));
-    }
-  } catch {}
-  return [];
+  return safeReadJSON(HEALTH_HISTORY_FILE, []);
 }
 
 function saveHistory(history) {
   try {
-    writeFileSync(HEALTH_HISTORY_FILE, JSON.stringify(history, null, 2));
+    safeWriteJSON(HEALTH_HISTORY_FILE, history);
   } catch (err) {
     log(`Failed to save history: ${err.message}`);
   }
@@ -122,7 +117,7 @@ function pruneHistory(history, windowSeconds) {
 
 function writeHeartbeat() {
   try {
-    writeFileSync(HEARTBEAT_FILE, JSON.stringify({ timestamp: Date.now(), pid: process.pid }));
+    atomicWriteFile(HEARTBEAT_FILE, JSON.stringify({ timestamp: Date.now(), pid: process.pid }));
   } catch {}
 }
 

@@ -24,6 +24,10 @@ import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-va
  * Analyze day-of-week return patterns.
  */
 export function dayOfWeekEffect(prices) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[dayOfWeekEffect] Invalid price data: ${v.errors.join("; ")}`); return {}; }
+
   const dayReturns = { Mon: [], Tue: [], Wed: [], Thu: [], Fri: [] };
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -53,6 +57,7 @@ export function dayOfWeekEffect(prices) {
   }
 
   return results;
+  } catch (err) { console.error(`[dayOfWeekEffect] Failed: ${err.message}`); return {}; }
 }
 
 // ─── Month-of-Year Effects ──────────────────────────────
@@ -146,6 +151,10 @@ export function overnightGapAnalysis(prices) {
  * If gap down > threshold, long at open expecting gap fill.
  */
 export function overnightGapStrategy(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[overnightGapStrategy] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const {
     gapThreshold = 0.003,  // min gap to trade
     positionSize = 0.10,
