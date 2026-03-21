@@ -65,6 +65,7 @@ function generateSignals(prices) {
 
 // ─── Backtest Engine (shared module) ─────────────────────
 
+import { validatePriceData } from "../shared/data-validation.mjs";
 import {
   runBacktest as _runBacktest,
   computeMetrics,
