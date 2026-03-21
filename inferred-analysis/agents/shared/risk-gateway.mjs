@@ -56,6 +56,16 @@ const RISK_CONFIG = {
   // VaR computation
   varConfidence: 0.95,
   varHorizon: 1,
+
+  // ─── Opt-in module flags ───────────────────────────────
+  // Enable tail-hedger: triggers hedge recommendations when drawdown exceeds threshold
+  enableTailHedger: false,
+  tailHedgeDrawdownThreshold: 0.03, // 3% portfolio drawdown triggers tail hedge evaluation
+
+  // Enable bayesian-risk: uses Bayesian posterior for confidence-weighted position sizing
+  enableBayesianRisk: false,
+  bayesianPriorSharpe: 0.4,       // skeptical prior for Sharpe (shrinkage toward 0.4)
+  bayesianPriorWeight: 0.3,       // weight given to prior vs sample
 };
 
 // ─── Internal State Cache ─────────────────────────────────
@@ -89,6 +99,18 @@ function refreshRiskState(forceRefresh = false) {
   // Compute concentration from profiles if we have return series
   const concentrationMetrics = computeConcentrationMetrics(profiles);
 
+  // ─── Tail Hedger integration (opt-in) ──────────────────
+  let tailHedgeRecommendation = null;
+  if (RISK_CONFIG.enableTailHedger) {
+    tailHedgeRecommendation = computeTailHedgeIfNeeded(profiles, drawdownMetrics);
+  }
+
+  // ─── Bayesian Risk integration (opt-in) ───────────────
+  let bayesianRiskAssessment = null;
+  if (RISK_CONFIG.enableBayesianRisk) {
+    bayesianRiskAssessment = computeBayesianRiskAssessment(profiles);
+  }
+
   _cachedRiskState = {
     timestamp: now,
     portfolioRisk,
@@ -99,6 +121,8 @@ function refreshRiskState(forceRefresh = false) {
     profiles,
     drawdownMetrics,
     concentrationMetrics,
+    tailHedgeRecommendation,
+    bayesianRiskAssessment,
   };
   _cacheTimestamp = now;
 

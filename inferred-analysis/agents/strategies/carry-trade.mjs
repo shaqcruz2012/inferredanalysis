@@ -21,6 +21,10 @@ import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-va
  * Uses the slope of price relative to its moving average as a carry signal.
  */
 export function estimateCarry(prices, shortMA = 5, longMA = 63) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[estimateCarry] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const signals = [];
 
   for (let i = longMA; i < prices.length; i++) {
@@ -51,14 +55,20 @@ export function estimateCarry(prices, shortMA = 5, longMA = 63) {
   }
 
   return signals;
+  } catch (err) { console.error(`[estimateCarry] Failed: ${err.message}`); return []; }
 }
 
 /**
  * Multi-asset carry strategy: rank assets by carry and go long highest, short lowest.
  */
 export function multiAssetCarry(priceArrays, options = {}) {
-  const { topN = 2, bottomN = 1, rebalanceDays = 21 } = options;
+  try {
   const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[multiAssetCarry] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+  const { topN = 2, bottomN = 1, rebalanceDays = 21 } = options;
 
   // Compute carry for each asset
   const carryData = {};
@@ -100,6 +110,7 @@ export function multiAssetCarry(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[multiAssetCarry] Failed: ${err.message}`); return []; }
 }
 
 /**

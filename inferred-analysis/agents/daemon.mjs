@@ -31,6 +31,20 @@ import {
   writeHealthCheckFile,
   createNotifyFn,
 } from "./shared/health-actions.mjs";
+import {
+  saveCheckpoint,
+  loadCheckpoint,
+  markAgentStarted,
+  markAgentCompleted,
+  detectStaleAgents,
+  getRunningAgentsSnapshot,
+  recordFailure,
+  isQuarantined,
+  clearFailures,
+  shouldScaleDown,
+  generateIncidentReport,
+  getSystemReport,
+} from "./shared/self-healer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");

@@ -15,6 +15,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, normalizeWeights, validateAllocation, applyTurnoverConstraint } from "../shared/constraints.mjs";
 
 // ─── Rebalancing Strategies ─────────────────────────────
 
@@ -124,13 +125,17 @@ function driftWeights(weights, symbols, prices, day) {
       ? (prices[sym][day].close - prices[sym][day - 1].close) / prices[sym][day - 1].close
       : 0;
     newWeights[sym] = (weights[sym] || 0) * (1 + ret);
+    // Guard against NaN from bad price data
+    if (!Number.isFinite(newWeights[sym])) newWeights[sym] = 0;
     totalValue += newWeights[sym];
   }
 
-  // Normalize
+  // Normalize using shared constraints
   if (totalValue > 0) {
-    for (const sym of symbols) {
-      newWeights[sym] /= totalValue;
+    const arr = symbols.map(s => newWeights[s]);
+    const normalized = normalizeWeights(arr, { targetSum: 1.0, longOnly: true });
+    for (let i = 0; i < symbols.length; i++) {
+      newWeights[symbols[i]] = normalized[i];
     }
   }
 

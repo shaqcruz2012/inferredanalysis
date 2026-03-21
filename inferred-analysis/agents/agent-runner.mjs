@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
 import { execSync } from "child_process";
 import { dirname, join } from "path";
+import { appendTSV, initTSV, atomicWriteFile } from "./shared/atomic-writer.mjs";
 import { fileURLToPath } from "url";
 import {
   loadFeedback,
@@ -304,7 +305,7 @@ function applyMutation(stratPath, mutation, hints) {
     content = content.replace(/threshold: [\d.]+/, `threshold: ${config.threshold.toFixed(4)}`);
   }
 
-  writeFileSync(stratPath, content);
+  atomicWriteFile(stratPath, content);
   return config;
 }
 
@@ -354,11 +355,7 @@ function runBacktest(stratPath, agentRole) {
 
 function logResult(agent, experiment, metrics, status) {
   const resultsPath = join(ROOT, "agents", "results.tsv");
-  const header = "timestamp\tagent\texperiment\tsharpe\tsortino\tcalmar\ttotal_return\tmax_drawdown\twin_rate\ttrades\tstatus\n";
-
-  if (!existsSync(resultsPath)) {
-    writeFileSync(resultsPath, header);
-  }
+  const header = "timestamp\tagent\texperiment\tsharpe\tsortino\tcalmar\ttotal_return\tmax_drawdown\twin_rate\ttrades\tstatus";
 
   const line = [
     new Date().toISOString(),
@@ -374,8 +371,7 @@ function logResult(agent, experiment, metrics, status) {
     status,
   ].join("\t");
 
-  const content = readFileSync(resultsPath, "utf-8");
-  writeFileSync(resultsPath, content + line + "\n");
+  appendTSV(resultsPath, line, header);
 }
 
 // ─── Paperclip Integration ──────────────────────────────

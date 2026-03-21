@@ -113,13 +113,18 @@ async function fetchDaily(symbol, outputSize = "full", priority = Priority.RESEA
     transform: (res) => res.json(),
     fallback: () => {
       console.warn(`  [fetch] API unavailable for ${symbol}, generating synthetic data`);
+      console.warn(`  [fetch] DEPRECATION: Synthetic fallback in fetchDaily() will be removed in v2.0. Use data-source-manager.getPrices() instead.`);
+      // Track synthetic usage (best-effort, async)
+      import("./data-source-manager.mjs").then(dsm => {
+        dsm.trackSyntheticUsage("fetch:fetchDaily", symbol, "API unavailable — synthetic fallback in fetchDaily()");
+      }).catch(() => {});
       return { _synthetic: true, prices: generateRealisticPrices(symbol) };
     },
   });
 
   // If we got synthetic fallback data
   if (result.data?._synthetic) {
-    console.warn(`  WARNING: Using synthetic data for ${symbol} (API unavailable)`);
+    console.warn(`  WARNING: Using synthetic data for ${symbol} (API unavailable). Migrate to data-source-manager.getPrices() for automatic real-data preference.`);
     return result.data.prices;
   }
 
@@ -144,12 +149,17 @@ async function fetchIntraday(symbol, interval = "60min", priority = Priority.RES
     transform: (res) => res.json(),
     fallback: () => {
       console.warn(`  [fetch] API unavailable for ${symbol} intraday, generating synthetic data`);
+      console.warn(`  [fetch] DEPRECATION: Synthetic fallback in fetchIntraday() will be removed in v2.0. Use data-source-manager.getPrices() instead.`);
+      // Track synthetic usage (best-effort, async)
+      import("./data-source-manager.mjs").then(dsm => {
+        dsm.trackSyntheticUsage("fetch:fetchIntraday", symbol, "API unavailable — synthetic fallback in fetchIntraday()");
+      }).catch(() => {});
       return { _synthetic: true, prices: generateRealisticPrices(symbol) };
     },
   });
 
   if (result.data?._synthetic) {
-    console.warn(`  WARNING: Using synthetic data for ${symbol} intraday (API unavailable)`);
+    console.warn(`  WARNING: Using synthetic data for ${symbol} intraday (API unavailable). Migrate to data-source-manager.getPrices() for automatic real-data preference.`);
     return result.data.prices;
   }
 

@@ -173,12 +173,20 @@ export class CorrelationSizer {
       if (sumW > 0) weights.forEach((_, i) => { weights[i] /= sumW; });
     }
 
-    // Clamp
-    weights.forEach((w, i) => { weights[i] = Math.max(0, Math.min(this.maxPositionSize, w)); });
-    const sumFinal = weights.reduce((a, b) => a + b, 0);
-    if (sumFinal > 0) weights.forEach((_, i) => { weights[i] /= sumFinal; });
+    // Apply position limits using shared constraints
+    const clamped = applyPositionLimits([...weights], this.maxPositionSize);
+    // Normalize to sum to 1 (long-only)
+    const normalized = normalizeWeights(clamped, { targetSum: 1.0, longOnly: true });
 
-    return Object.fromEntries(symbols.map((s, i) => [s, weights[i]]));
+    // Validate the allocation
+    const validation = validateAllocation(normalized, { maxSinglePosition: this.maxPositionSize });
+    if (!validation.valid) {
+      // Fallback to equal weight if validation fails
+      const equalWeight = 1 / symbols.length;
+      return Object.fromEntries(symbols.map(s => [s, equalWeight]));
+    }
+
+    return Object.fromEntries(symbols.map((s, i) => [s, normalized[i]]));
   }
 
   /**

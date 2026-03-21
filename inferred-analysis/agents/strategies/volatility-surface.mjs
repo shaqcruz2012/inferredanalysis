@@ -261,6 +261,7 @@ export function volSignals(prices, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[volSignals] Failed: ${err.message}`); return []; }
 }
 
 // ─── Full Analyzer Class ────────────────────────────────

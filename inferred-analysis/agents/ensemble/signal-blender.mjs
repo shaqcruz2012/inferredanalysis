@@ -16,6 +16,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { fillGaps, getSignalOverlap } from "../shared/signal-aligner.mjs";
 
 // ─── Utility Functions ──────────────────────────────────────
 
@@ -125,6 +126,68 @@ export class SignalBlender {
   /** Register a signal series with optional metadata. */
   addSignal(name, values, metadata = {}) {
     this.signals.set(name, { values: [...values], metadata });
+  }
+
+  /**
+   * Register a date-indexed signal series and align it with existing signals.
+   * Signals with dates are gap-filled before being stored as value arrays.
+   *
+   * @param {string} name - Signal name
+   * @param {Array} datedSignals - Array of { date, signal } or { date, value }
+   * @param {Object} metadata - Optional metadata (halfLife, fillMethod, etc.)
+   */
+  addSignalWithDates(name, datedSignals, metadata = {}) {
+    if (!datedSignals || datedSignals.length === 0) {
+      this.signals.set(name, { values: [], metadata });
+      return;
+    }
+
+    // Normalize to { date, signal, price } format
+    const normalized = datedSignals.map(s => ({
+      date: s.date,
+      signal: s.signal != null ? s.signal : (s.value != null ? s.value : 0),
+      price: s.price || null,
+    }));
+
+    // Fill gaps using the specified method
+    const fillMethod = metadata.fillMethod || "forward";
+    const filled = fillGaps(normalized, fillMethod);
+
+    // Store values array and date index for potential re-alignment
+    const values = filled.map(s => s.signal);
+    const dates = filled.map(s => s.date);
+    this.signals.set(name, { values, dates, metadata });
+  }
+
+  /**
+   * Align all date-indexed signals to their common date range.
+   * Call this after adding all signals with addSignalWithDates.
+   */
+  alignAllSignals() {
+    const names = [...this.signals.keys()];
+    const withDates = names.filter(n => this.signals.get(n).dates);
+    if (withDates.length < 2) return;
+
+    // Find the intersection of all date ranges
+    const dateSets = withDates.map(n => new Set(this.signals.get(n).dates));
+    let commonDates = dateSets[0];
+    for (let i = 1; i < dateSets.length; i++) {
+      commonDates = new Set([...commonDates].filter(d => dateSets[i].has(d)));
+    }
+    const sorted = [...commonDates].sort();
+    if (sorted.length === 0) return;
+
+    // Re-index each signal to the common dates
+    for (const name of withDates) {
+      const sig = this.signals.get(name);
+      const dateToValue = new Map();
+      for (let i = 0; i < sig.dates.length; i++) {
+        dateToValue.set(sig.dates[i], sig.values[i]);
+      }
+      const aligned = sorted.map(d => dateToValue.get(d) || 0);
+      sig.values = aligned;
+      sig.dates = sorted;
+    }
   }
 
   /** Set forward returns for IC-based operations. */
