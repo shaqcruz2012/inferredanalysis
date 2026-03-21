@@ -302,6 +302,123 @@ function computeEnsemble(rows) {
   };
 }
 
+// ─── Strategy Leaderboard Helpers ────────────────────────
+
+/**
+ * Compute per-strategy statistics from results rows.
+ * Derives Sharpe (best), Sortino (approx), max drawdown (worst composite),
+ * and win rate (% of experiments kept) for each unique strategy name.
+ */
+function computeStrategyLeaderboard(rows) {
+  const stratMap = {};
+
+  for (const r of rows) {
+    if (r.status === "baseline") continue;
+    const key = r.strategy;
+    if (!stratMap[key]) {
+      stratMap[key] = {
+        name: key,
+        sharpes: [],
+        composites: [],
+        kept: 0,
+        total: 0,
+      };
+    }
+    const s = stratMap[key];
+    s.sharpes.push(r.sharpe);
+    s.composites.push(r.composite);
+    s.total++;
+    if (r.status === "keep") s.kept++;
+  }
+
+  const results = [];
+  for (const s of Object.values(stratMap)) {
+    if (s.total === 0) continue;
+
+    // Best Sharpe
+    const bestSharpe = Math.max(...s.sharpes);
+
+    // Sortino approximation: use downside deviation (negative sharpes only)
+    const mean = s.sharpes.reduce((a, b) => a + b, 0) / s.sharpes.length;
+    const downsideReturns = s.sharpes.filter(v => v < 0);
+    let sortino = NaN;
+    if (downsideReturns.length > 0) {
+      const downsideDev = Math.sqrt(
+        downsideReturns.reduce((sum, v) => sum + v * v, 0) / downsideReturns.length
+      );
+      sortino = downsideDev > 0 ? mean / downsideDev : 0;
+    } else if (mean > 0) {
+      sortino = Infinity;
+    }
+
+    // Max drawdown: worst (most negative) composite across experiments
+    const maxDrawdown = Math.min(...s.composites);
+
+    // Win rate: % kept
+    const winRate = (s.kept / s.total) * 100;
+
+    // Composite score for coloring (0-100 scale)
+    // Weighted: Sharpe contribution + win rate + sortino bonus
+    let score = 0;
+    score += Math.min(30, Math.max(0, (bestSharpe + 3) * 10)); // sharpe -3..0 -> 0..30
+    score += winRate * 0.5; // win rate 0..100 -> 0..50
+    score += Math.min(20, isFinite(sortino) && sortino > 0 ? sortino * 10 : 0); // sortino bonus 0..20
+    score = Math.max(0, Math.min(100, score));
+
+    results.push({ name: s.name, sharpe: bestSharpe, sortino, maxDrawdown, winRate, score, total: s.total });
+  }
+
+  // Sort by best Sharpe descending
+  results.sort((a, b) => b.sharpe - a.sharpe);
+  return results;
+}
+
+function scoreColor(score) {
+  if (score > 70) return BRIGHT_GREEN;
+  if (score >= 40) return YELLOW;
+  return RED;
+}
+
+// ─── Risk Status Helpers ─────────────────────────────────
+
+function getRiskStatusData() {
+  const result = { available: false, riskScore: null, breakerStatus: null };
+
+  try {
+    if (_riskGateway && typeof _riskGateway.getPortfolioRiskScore === "function") {
+      result.riskScore = _riskGateway.getPortfolioRiskScore();
+      result.available = true;
+    }
+  } catch { /* ignore */ }
+
+  try {
+    if (_breakerGuard && typeof _breakerGuard.getBreakerSummary === "function") {
+      result.breakerStatus = _breakerGuard.getBreakerSummary();
+      result.available = true;
+    } else if (_breakerGuard && typeof _breakerGuard.isPortfolioHalted === "function") {
+      result.breakerStatus = _breakerGuard.isPortfolioHalted();
+      result.available = true;
+    }
+  } catch { /* ignore */ }
+
+  return result;
+}
+
+// ─── Data Quality Helpers ────────────────────────────────
+
+function getDataQualityData() {
+  const result = { available: false, status: null };
+
+  try {
+    if (_dataSourceManager && typeof _dataSourceManager.getMigrationStatus === "function") {
+      result.status = _dataSourceManager.getMigrationStatus();
+      result.available = true;
+    }
+  } catch { /* ignore */ }
+
+  return result;
+}
+
 // ─── Render Dashboard ───────────────────────────────────
 
 async function render() {
