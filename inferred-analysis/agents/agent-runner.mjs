@@ -34,6 +34,7 @@ import {
   biasedRandomInt,
   biasedRandom,
 } from "./shared/feedback-loop.mjs";
+import { isTradingHalted, formatBreakerBlock } from "./risk/breaker-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -67,9 +68,12 @@ const MUTATIONS = [
   {
     name: "mean_reversion",
     description: "Mean reversion: buy when price drops below moving average, sell when above",
-    apply(config, signalFn) {
-      config.lookback = 10 + Math.floor(Math.random() * 40);
-      config.threshold = 0.005 + Math.random() * 0.03;
+    apply(config, signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      config.lookback = biasedRandomInt(10, 49, lb, conf);
+      config.threshold = biasedRandom(0.005, 0.035, tb, conf);
       return `function generateSignals(prices) {
   const signals = [];
   const lookback = ${config.lookback};
@@ -91,9 +95,11 @@ const MUTATIONS = [
   {
     name: "momentum_crossover",
     description: "Dual moving average crossover momentum strategy",
-    apply(config) {
-      const fast = 5 + Math.floor(Math.random() * 15);
-      const slow = fast + 10 + Math.floor(Math.random() * 30);
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const fast = biasedRandomInt(5, 19, lb, conf);
+      const slow = fast + biasedRandomInt(10, 39, lb, conf);
       config.lookback = slow;
       return `function generateSignals(prices) {
   const signals = [];
@@ -116,9 +122,12 @@ const MUTATIONS = [
   {
     name: "volatility_breakout",
     description: "Breakout strategy based on volatility expansion",
-    apply(config) {
-      const lookback = 10 + Math.floor(Math.random() * 20);
-      const volMult = 1.0 + Math.random() * 2.0;
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(10, 29, lb, conf);
+      const volMult = biasedRandom(1.0, 3.0, tb, conf);
       config.lookback = lookback;
       return `function generateSignals(prices) {
   const signals = [];
@@ -146,9 +155,12 @@ const MUTATIONS = [
   {
     name: "rsi_contrarian",
     description: "RSI-based contrarian strategy — buy oversold, sell overbought",
-    apply(config) {
-      const period = 7 + Math.floor(Math.random() * 21);
-      const oversold = 20 + Math.floor(Math.random() * 15);
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const period = biasedRandomInt(7, 27, lb, conf);
+      const oversold = biasedRandomInt(20, 34, tb, conf);
       const overbought = 100 - oversold;
       config.lookback = period;
       return `function generateSignals(prices) {
@@ -177,10 +189,13 @@ const MUTATIONS = [
   {
     name: "adaptive_momentum",
     description: "Momentum with adaptive threshold based on recent volatility",
-    apply(config) {
-      const lookback = 15 + Math.floor(Math.random() * 25);
-      const volWindow = 5 + Math.floor(Math.random() * 15);
-      const sensitivity = 0.5 + Math.random() * 2.0;
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(15, 39, lb, conf);
+      const volWindow = biasedRandomInt(5, 19, lb, conf);
+      const sensitivity = biasedRandom(0.5, 2.5, tb, conf);
       config.lookback = lookback;
       return `function generateSignals(prices) {
   const signals = [];
@@ -210,8 +225,10 @@ const MUTATIONS = [
   {
     name: "price_channel",
     description: "Donchian channel breakout — buy at highs, sell at lows",
-    apply(config) {
-      const lookback = 10 + Math.floor(Math.random() * 40);
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(10, 49, lb, conf);
       config.lookback = lookback;
       return `function generateSignals(prices) {
   const signals = [];
@@ -398,9 +415,24 @@ async function main() {
   console.log(`║  Iterations: ${String(opts.iterations).padEnd(35)}║`);
   console.log(`╚══════════════════════════════════════════════════╝\n`);
 
+  // Circuit breaker pre-flight check
+  const preFlightBreaker = isTradingHalted(opts.agent);
+  if (preFlightBreaker.halted) {
+    console.log(formatBreakerBlock(`agent-runner pre-flight ${opts.agent}`, preFlightBreaker));
+    console.log(`\n  CIRCUIT BREAKER: Agent ${opts.agent} is halted. Skipping all experiments.`);
+    console.log(`  Reason: ${preFlightBreaker.reason}\n`);
+    process.exit(0);
+  }
+
   // Setup strategy file
   const stratPath = ensureStrategyFile(opts.agent);
   console.log(`Strategy file: ${stratPath}\n`);
+
+  // Load feedback from prior experiments
+  const resultsPath = join(ROOT, "agents", "results.tsv");
+  let feedback = loadFeedback(resultsPath);
+  console.log(formatFeedbackSummary(feedback));
+  console.log();
 
   // Get baseline
   console.log("Running baseline...");
@@ -433,6 +465,15 @@ async function main() {
   let bestContent = baselineContent;
 
   for (let i = 1; i <= opts.iterations; i++) {
+    // Circuit breaker check before each experiment
+    const iterBreaker = isTradingHalted(opts.agent);
+    if (iterBreaker.halted) {
+      console.log(formatBreakerBlock(`agent-runner experiment ${i} ${opts.agent}`, iterBreaker));
+      console.log(`  CIRCUIT BREAKER: Trading halted mid-run. Stopping experiments.`);
+      console.log(`  Reason: ${iterBreaker.reason}`);
+      break;
+    }
+
     // Pick random mutation
     const mutation = MUTATIONS[Math.floor(Math.random() * MUTATIONS.length)];
     console.log(`─── Experiment ${i}/${opts.iterations}: ${mutation.name} ───`);

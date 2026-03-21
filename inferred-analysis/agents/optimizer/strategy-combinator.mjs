@@ -16,6 +16,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampParam, clampSharpe } from "../shared/constraints.mjs";
 
 // ─── Top-K Result Tracker ────────────────────────────────
 
@@ -73,9 +74,9 @@ class TopKTracker {
  * Accepts a parameter object and price array, returns Sharpe ratio.
  */
 function defaultFitness(params, prices) {
-  const lookback = Math.round(params.lookback || 20);
-  const threshold = params.threshold || 0.02;
-  const positionSize = params.positionSize || 0.10;
+  const lookback = Math.round(clampParam("lookback", params.lookback || 20));
+  const threshold = clampParam("threshold", params.threshold || 0.02);
+  const positionSize = clampParam("positionSize", params.positionSize || 0.10);
   const transactionCostBps = 15; // 10 cost + 5 slippage
 
   // Generate signals

@@ -15,6 +15,17 @@
  *   import { optimizePortfolio, riskParityWeights } from './portfolio-optimizer.mjs'
  */
 
+import {
+  BOUNDS,
+  applyPositionLimits,
+  applySectorConstraints,
+  applyTurnoverConstraint,
+  normalizeWeights,
+  validateAllocation,
+  safeMatInverse,
+  clampWeight,
+} from "../shared/constraints.mjs";
+
 // ─── Matrix Utilities ───────────────────────────────────
 
 function matMul(A, B) {
@@ -36,29 +47,18 @@ function colToVec(C) { return C.map(row => row[0]); }
 
 function matScale(A, s) { return A.map(row => row.map(x => x * s)); }
 
+/**
+ * Safe matrix inverse with singularity detection and regularization fallback.
+ * Delegates to shared/constraints.mjs safeMatInverse.
+ * Returns null if inversion fails even after regularization.
+ */
 function matInverse(M) {
-  const n = M.length;
-  const aug = M.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
-
-  for (let i = 0; i < n; i++) {
-    let maxRow = i;
-    for (let k = i + 1; k < n; k++) {
-      if (Math.abs(aug[k][i]) > Math.abs(aug[maxRow][i])) maxRow = k;
-    }
-    [aug[i], aug[maxRow]] = [aug[maxRow], aug[i]];
-
-    const pivot = aug[i][i];
-    if (Math.abs(pivot) < 1e-12) return null; // singular
-    for (let j = 0; j < 2 * n; j++) aug[i][j] /= pivot;
-
-    for (let k = 0; k < n; k++) {
-      if (k === i) continue;
-      const factor = aug[k][i];
-      for (let j = 0; j < 2 * n; j++) aug[k][j] -= factor * aug[i][j];
-    }
+  const { inverse, regularized } = safeMatInverse(M);
+  if (regularized && inverse) {
+    // Log once — regularized inversions may subtly affect results
+    console.warn("[portfolio-optimizer] matInverse: matrix near-singular, applied ridge regularization");
   }
-
-  return aug.map(row => row.slice(n));
+  return inverse;
 }
 
 // ─── Covariance & Correlation ───────────────────────────
@@ -156,10 +156,17 @@ export function maxSharpePortfolio(cov, expectedReturns, riskFreeRate = 0) {
   return clampWeights(weights);
 }
 
-function clampWeights(weights, minWeight = -0.5, maxWeight = 1.0) {
-  let w = weights.map(x => Math.max(minWeight, Math.min(maxWeight, x)));
-  const sum = w.reduce((a, b) => a + b, 0);
-  if (Math.abs(sum) > 1e-10) w = w.map(x => x / sum);
+/**
+ * Clamp and normalize portfolio weights with position limits.
+ * Uses shared constraints for consistent bounds across all optimizers.
+ */
+function clampWeights(weights, minWeight = BOUNDS.maxShortPosition, maxWeight = BOUNDS.maxSinglePosition * 4) {
+  // Sanitize NaN/Infinity
+  let w = weights.map(x => clampWeight(x, minWeight, maxWeight));
+  // Apply per-position limits
+  w = applyPositionLimits(w, BOUNDS.maxSinglePosition);
+  // Normalize to sum to 1
+  w = normalizeWeights(w, { targetSum: 1.0 });
   return w;
 }
 
@@ -200,6 +207,9 @@ export function riskParityWeights(cov, iterations = 100) {
     weights = newWeights.map(w => w / sumNew);
   }
 
+  // Apply position limits and normalize
+  weights = applyPositionLimits(weights, BOUNDS.maxSinglePosition);
+  weights = normalizeWeights(weights, { targetSum: 1.0, longOnly: true });
   return weights;
 }
 
@@ -319,7 +329,15 @@ export function getEfficientFrontier(cov, expectedReturns, points = 20) {
  * Run multiple optimization methods and compare results.
  */
 export function optimizePortfolio(returnArrays, labels = null, options = {}) {
-  const { riskFreeRate = 0, marketWeights = null } = options;
+  const {
+    riskFreeRate = 0,
+    marketWeights = null,
+    sectors = null,
+    maxSectorExposure = BOUNDS.maxSectorExposure,
+    maxSinglePosition = BOUNDS.maxSinglePosition,
+    previousWeights = null,
+    maxTurnover = BOUNDS.maxTurnover,
+  } = options;
   const n = returnArrays.length;
   const T = returnArrays[0].length;
   const names = labels || returnArrays.map((_, i) => `Strategy ${i + 1}`);
@@ -387,6 +405,35 @@ export function optimizePortfolio(returnArrays, labels = null, options = {}) {
     };
     results.black_litterman.sharpe = results.black_litterman.risk > 0
       ? (results.black_litterman.return - riskFreeRate) / results.black_litterman.risk : 0;
+  }
+
+  // Post-process all method weights with sector and turnover constraints
+  for (const [method, data] of Object.entries(results)) {
+    let w = data.weights;
+
+    // Apply sector constraints if provided
+    if (sectors) {
+      w = applySectorConstraints(w, sectors, maxSectorExposure);
+      w = normalizeWeights(w, { targetSum: 1.0 });
+    }
+
+    // Apply turnover constraint if previous weights provided
+    if (previousWeights) {
+      w = applyTurnoverConstraint(w, previousWeights, maxTurnover);
+    }
+
+    // Validate final allocation
+    const validation = validateAllocation(w, { maxSinglePosition });
+    if (!validation.valid) {
+      // Force feasibility: re-normalize
+      w = normalizeWeights(w, { targetSum: 1.0 });
+    }
+
+    data.weights = w;
+    data.return = portfolioReturn(w, means);
+    data.risk = portfolioVol(w, annCov);
+    data.sharpe = data.risk > 0 ? (data.return - riskFreeRate) / data.risk : 0;
+    data.validation = validation;
   }
 
   return {

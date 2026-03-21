@@ -235,7 +235,7 @@ export function timeSeriesMomentum(prices, lookbacks = [21, 63, 126, 252]) {
     // Volatility scaling
     let vol = 0;
     for (let j = i - 21; j < i; j++) {
-      const r = (prices[j + 1].close - prices[j].close) / prices[j].close;
+      const r = safeDiv(prices[j + 1].close - prices[j].close, prices[j].close);
       vol += r * r;
     }
     vol = Math.sqrt(vol / 21) * Math.sqrt(252);
@@ -252,12 +252,16 @@ export function timeSeriesMomentum(prices, lookbacks = [21, 63, 126, 252]) {
   }
 
   return signals;
+  } catch (err) { console.error("[timeSeriesMomentum] Signal generation failed:", err.message); return []; }
 }
 
 /**
  * Turtle trading system (simplified).
  */
 export function turtleSystem(prices, options = {}) {
+  try {
+  const validation = validatePriceData(prices);
+  if (!validation.valid) { console.error("[turtleSystem] Invalid price data:", validation.errors[0]); return []; }
   const { entryLookback = 20, exitLookback = 10, atrPeriod = 20, riskPerTrade = 0.01 } = options;
   const signals = [];
   const atrVals = atr(prices, atrPeriod);
@@ -307,7 +311,7 @@ export function turtleSystem(prices, options = {}) {
     }
 
     // Position sizing by ATR
-    const unitSize = currentATR > 0 ? riskPerTrade / (currentATR / current) : 0;
+    const unitSize = currentATR > 0 ? safeDiv(riskPerTrade, safeDiv(currentATR, current)) : 0;
 
     position = signal;
 
@@ -322,6 +326,7 @@ export function turtleSystem(prices, options = {}) {
     });
   }
   return signals;
+  } catch (err) { console.error("[turtleSystem] Signal generation failed:", err.message); return []; }
 }
 
 /**
