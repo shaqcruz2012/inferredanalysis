@@ -220,6 +220,7 @@ export function fxMomentumStrategy(rateHistories, lookback = 63) {
     signals.push({ date: rateHistories[pairs[0]][i].date, allocation, momentum });
   }
   return signals;
+  } catch (err) { console.error(`[fxMomentumStrategy] Failed: ${err.message}`); return []; }
 }
 
 // ─── FX Value Strategy ──────────────────────────────────
@@ -264,6 +265,12 @@ export function fxValueStrategy(rateHistories, pppRates) {
  * @returns {{date: string, allocation: Object<string, number>, components: Object}[]}
  */
 export function combinedFXStrategy(rateHistories, yields, pppRates, options = {}) {
+  try {
+  const pairs = Object.keys(rateHistories);
+  for (const pair of pairs) {
+    const v = validatePriceData(rateHistories[pair]);
+    if (!v.valid) { console.error(`[combinedFXStrategy] Invalid data for ${pair}: ${v.errors.join("; ")}`); return []; }
+  }
   const { carryW = 0.4, momW = 0.35, valW = 0.25, lookback = 63 } = options;
   const pairs = Object.keys(rateHistories);
   const minLen = Math.min(...pairs.map(p => rateHistories[p].length));
