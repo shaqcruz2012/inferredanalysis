@@ -46,6 +46,8 @@ import {
   generateIncidentReport,
   getSystemReport,
 } from "./shared/self-healer.mjs";
+import { reconcile, autoResolve, getReconciliationReport, isDriftSignificant } from "./trading/reconciler.mjs";
+import { getTracker } from "./shared/portfolio-tracker.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -365,6 +367,13 @@ async function main() {
       log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle (portfolio halted)...`);
       await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
       continue;
+    }
+
+    // ─── Position reconciliation ─────────────────────────
+    try {
+      await runReconciliation();
+    } catch (reconErr) {
+      log(`Reconciliation error (non-fatal): ${reconErr.message}`);
     }
 
     // Rotate through agents — run one per cycle to spread work

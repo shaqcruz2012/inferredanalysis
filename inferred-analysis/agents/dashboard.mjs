@@ -22,17 +22,17 @@ import http from "http";
 
 let _riskGateway = null;
 try {
-  _riskGateway = await import("../shared/risk-gateway.mjs");
+  _riskGateway = await import("./shared/risk-gateway.mjs");
 } catch { /* not configured */ }
 
 let _breakerGuard = null;
 try {
-  _breakerGuard = await import("../risk/breaker-guard.mjs");
+  _breakerGuard = await import("./risk/breaker-guard.mjs");
 } catch { /* not configured */ }
 
 let _dataSourceManager = null;
 try {
-  _dataSourceManager = await import("../data/data-source-manager.mjs");
+  _dataSourceManager = await import("./data/data-source-manager.mjs");
 } catch { /* not configured */ }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -483,6 +483,135 @@ async function render() {
   if (ensemble) {
     out += `  ${DIM}${"─".repeat(24)}┼${"─".repeat(10)}┼${"─".repeat(22)}┼${"─".repeat(8)}┼${"─".repeat(9)}┼${"─".repeat(9)}${RESET}\n`;
     out += `  ${BOLD}${BRIGHT_CYAN}${pad(ensemble.agent, 24)}${RESET} ${DIM}│${RESET} ${pad(sharpeColor(ensemble.bestSharpe), 8 + 10, "right")} ${DIM}│${RESET} ${pad(ensemble.bestStrategy, 20)} ${DIM}│${RESET} ${pad(String(ensemble.total), 6, "right")} ${DIM}│${RESET} ${pad("---", 7, "right")} ${DIM}│${RESET} ${DIM}${pad("---", 8)}${RESET}\n`;
+  }
+
+  out += "\n";
+
+  // ─── Strategy Leaderboard ─────────────────────
+  out += `  ${BOLD}${WHITE}STRATEGY LEADERBOARD${RESET}\n`;
+
+  const strategies = computeStrategyLeaderboard(rows);
+
+  if (strategies.length > 0) {
+    const sHdrName = pad("Strategy", 24);
+    const sHdrSharpe = pad("Sharpe", 8, "right");
+    const sHdrSortino = pad("Sortino", 9, "right");
+    const sHdrMaxDD = pad("Max DD", 9, "right");
+    const sHdrWinRate = pad("Win%", 7, "right");
+    const sHdrScore = pad("Score", 7, "right");
+
+    out += `  ${DIM}${sHdrName} ${DIM}|${RESET}${DIM} ${sHdrSharpe} ${DIM}|${RESET}${DIM} ${sHdrSortino} ${DIM}|${RESET}${DIM} ${sHdrMaxDD} ${DIM}|${RESET}${DIM} ${sHdrWinRate} ${DIM}|${RESET}${DIM} ${sHdrScore}${RESET}\n`;
+    out += `  ${DIM}${"─".repeat(24)}┼${"─".repeat(10)}┼${"─".repeat(11)}┼${"─".repeat(11)}┼${"─".repeat(9)}┼${"─".repeat(8)}${RESET}\n`;
+
+    for (const s of strategies.slice(0, 15)) {
+      const sColor = scoreColor(s.score);
+      const sortinoStr = isFinite(s.sortino) ? s.sortino.toFixed(2) : (isNaN(s.sortino) ? "---" : "Inf");
+      const ddStr = (s.maxDrawdown * 100).toFixed(1) + "%";
+      const wrStr = s.winRate.toFixed(1) + "%";
+      const scStr = s.score.toFixed(0);
+      out += `  ${sColor}${pad(s.name, 24)}${RESET} ${DIM}|${RESET} ${pad(sharpeColor(s.sharpe), 8 + 10, "right")} ${DIM}|${RESET} ${pad(sortinoStr, 9, "right")} ${DIM}|${RESET} ${pad(ddStr, 9, "right")} ${DIM}|${RESET} ${pad(wrStr, 7, "right")} ${DIM}|${RESET} ${sColor}${pad(scStr, 7, "right")}${RESET}\n`;
+    }
+  } else {
+    out += `  ${DIM}  No strategy data available.${RESET}\n`;
+  }
+
+  out += "\n";
+
+  // ─── Risk Status Panel ────────────────────────
+  out += `  ${BOLD}${WHITE}RISK STATUS${RESET}\n`;
+  out += `  ${horizontalLine(W - 4)}\n`;
+
+  const riskData = getRiskStatusData();
+  if (riskData.available) {
+    if (riskData.riskScore !== null && typeof riskData.riskScore === "object") {
+      const rs = riskData.riskScore;
+      const rsVal = rs.score ?? rs.composite ?? rs.total ?? null;
+      if (rsVal !== null) {
+        const rsColor = rsVal > 60 ? RED : rsVal > 40 ? YELLOW : GREEN;
+        out += `  ${BOLD}Portfolio Risk Score:${RESET} ${rsColor}${rsVal}/100${RESET}`;
+        if (rs.level) out += `  ${DIM}(${rs.level})${RESET}`;
+        out += "\n";
+      } else {
+        out += `  ${BOLD}Portfolio Risk Score:${RESET} ${DIM}---${RESET}\n`;
+      }
+    } else if (typeof riskData.riskScore === "number") {
+      const rsVal = riskData.riskScore;
+      const rsColor = rsVal > 60 ? RED : rsVal > 40 ? YELLOW : GREEN;
+      out += `  ${BOLD}Portfolio Risk Score:${RESET} ${rsColor}${rsVal}/100${RESET}\n`;
+    }
+
+    if (riskData.breakerStatus !== null) {
+      const bs = riskData.breakerStatus;
+      if (typeof bs.readable !== "undefined") {
+        // getBreakerSummary() result
+        const bLabel = bs.portfolioHalted ? `${RED}HALTED${RESET}` : `${GREEN}CLEAR${RESET}`;
+        out += `  ${BOLD}Circuit Breaker:${RESET} ${bLabel}`;
+        if (bs.activeBreakerCount >= 0) out += `  ${DIM}(${bs.activeBreakerCount} breakers tracked)${RESET}`;
+        out += "\n";
+        if (bs.staleMs !== Infinity && bs.staleMs > 0) {
+          const staleSec = Math.round(bs.staleMs / 1000);
+          out += `  ${DIM}Last updated: ${staleSec}s ago${RESET}\n`;
+        }
+      } else if (typeof bs.halted !== "undefined") {
+        // isPortfolioHalted() result
+        const bLabel = bs.halted ? `${RED}HALTED${RESET}` : `${GREEN}CLEAR${RESET}`;
+        out += `  ${BOLD}Circuit Breaker:${RESET} ${bLabel}`;
+        if (bs.reason) out += `  ${DIM}${bs.reason}${RESET}`;
+        out += "\n";
+      }
+    }
+  } else {
+    out += `  ${DIM}Not configured${RESET}\n`;
+  }
+
+  out += "\n";
+
+  // ─── Data Quality Panel ───────────────────────
+  out += `  ${BOLD}${WHITE}DATA QUALITY${RESET}\n`;
+  out += `  ${horizontalLine(W - 4)}\n`;
+
+  const dqData = getDataQualityData();
+  if (dqData.available && dqData.status) {
+    const sess = dqData.status.session;
+    const hist = dqData.status.historical;
+
+    const realPct = sess.realPct || "0.0%";
+    const synthPct = sess.syntheticPct || "0.0%";
+    const totalCalls = sess.totalCalls || 0;
+
+    const realColor = parseFloat(realPct) > 70 ? GREEN : parseFloat(realPct) > 30 ? YELLOW : RED;
+    const synthColor = parseFloat(synthPct) > 30 ? RED : parseFloat(synthPct) > 10 ? YELLOW : GREEN;
+
+    out += `  ${BOLD}Session:${RESET} ${totalCalls} calls  `;
+    out += `${BOLD}Real:${RESET} ${realColor}${realPct}${RESET}  `;
+    out += `${BOLD}Synthetic:${RESET} ${synthColor}${synthPct}${RESET}\n`;
+
+    if (hist) {
+      out += `  ${BOLD}Historical:${RESET} ${hist.totalSyntheticEvents || 0} synthetic events  `;
+      out += `${DIM}Migration: ${hist.migrationPct || "N/A"}${RESET}\n`;
+    }
+  } else {
+    out += `  ${DIM}Not configured${RESET}\n`;
+  }
+
+  out += "\n";
+
+  // ─── Experiment Feed ──────────────────────────
+  out += `  ${BOLD}${WHITE}EXPERIMENT FEED${RESET}  ${DIM}(last 10)${RESET}\n`;
+  out += `  ${DIM}${pad("Time", 6)} ${pad("Agent", 22)} ${pad("Mutation", 22)} ${pad("Sharpe", 8, "right")} ${"Status"}${RESET}\n`;
+  out += `  ${horizontalLine(W - 4)}\n`;
+
+  const feedRows = rows.slice(-10).reverse();
+  for (const r of feedRows) {
+    const time = r.timestamp.substring(11, 16); // HH:MM
+    const sColor = sharpeColor(r.sharpe);
+    const tag = statusTag(r.status);
+    // Strategy name serves as the mutation type
+    out += `  ${DIM}${pad(time, 6)}${RESET} ${pad(r.agent, 22)} ${pad(r.strategy, 22)} ${pad(sColor, 8 + 10, "right")} ${tag}\n`;
+  }
+
+  if (feedRows.length === 0) {
+    out += `  ${DIM}  No experiments recorded yet.${RESET}\n`;
   }
 
   out += "\n";
