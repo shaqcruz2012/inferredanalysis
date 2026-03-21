@@ -17,6 +17,7 @@
 
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { clampSharpe, clampParam } from "../shared/constraints.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");

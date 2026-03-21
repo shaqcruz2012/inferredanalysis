@@ -528,12 +528,12 @@ async function main() {
         logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "keep");
       } else {
         console.log(`  Genetic result does not beat baseline: ${gSharpe.toFixed(4)} <= ${bestSharpe.toFixed(4)}`);
-        writeFileSync(stratPath, baselineContent);
+        atomicWriteFile(stratPath, baselineContent);
         logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "discard");
       }
     } else {
       console.log(`  Genetic best genome failed backtest — reverting to baseline`);
-      writeFileSync(stratPath, baselineContent);
+      atomicWriteFile(stratPath, baselineContent);
     }
 
     // Log elite population for future seeding

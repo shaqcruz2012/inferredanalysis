@@ -16,6 +16,8 @@ import { readFileSync, readdirSync, existsSync, appendFileSync } from "fs";
 import { join, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { aggregateSignals, computeWeights, METHODS } from "./signal-aggregator.mjs";
+import { alignSignals, getSignalOverlap, getRegimeAlignmentMethod } from "../shared/signal-aligner.mjs";
+import { detectVolatilityRegime } from "./regime-detector.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "..");

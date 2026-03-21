@@ -117,8 +117,13 @@ export function multiAssetCarry(priceArrays, options = {}) {
  * Carry + Momentum combination.
  */
 export function carryMomentum(priceArrays, options = {}) {
-  const { carryWeight = 0.5, momentumWeight = 0.5, lookback = 63, rebalanceDays = 21 } = options;
+  try {
   const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[carryMomentum] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+  const { carryWeight = 0.5, momentumWeight = 0.5, lookback = 63, rebalanceDays = 21 } = options;
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
 
@@ -162,6 +167,7 @@ export function carryMomentum(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[carryMomentum] Failed: ${err.message}`); return []; }
 }
 
 // Backtest helper

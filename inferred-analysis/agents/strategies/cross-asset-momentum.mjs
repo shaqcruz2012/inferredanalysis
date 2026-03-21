@@ -74,6 +74,13 @@ export function rankAssets(momentumData) {
  * Buy top N assets by relative momentum, sell bottom N.
  */
 export function relativeStrength(priceArrays, options = {}) {
+  try {
+  const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[relativeStrength] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+
   const {
     lookback = 63,
     topN = 2,
@@ -83,7 +90,6 @@ export function relativeStrength(priceArrays, options = {}) {
   } = options;
 
   const adjustedLookback = lookback + skipLastDays;
-  const symbols = Object.keys(priceArrays);
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
 
@@ -120,6 +126,7 @@ export function relativeStrength(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[relativeStrength] Failed: ${err.message}`); return []; }
 }
 
 // ─── Strategy 2: Dual Momentum ──────────────────────────
