@@ -24,6 +24,16 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from
 import { execSync } from "child_process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import {
+  loadFeedback,
+  getRecommendedMutation,
+  getParameterHints,
+  buildLineageRecord,
+  formatLineageLog,
+  formatFeedbackSummary,
+  biasedRandomInt,
+  biasedRandom,
+} from "./shared/feedback-loop.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -239,7 +249,7 @@ function ensureStrategyFile(agentRole) {
   return stratPath;
 }
 
-function applyMutation(stratPath, mutation) {
+function applyMutation(stratPath, mutation, hints) {
   let content = readFileSync(stratPath, "utf-8");
 
   // Parse current CONFIG
@@ -252,8 +262,8 @@ function applyMutation(stratPath, mutation) {
     positionSize: 0.10,
   };
 
-  // Generate new signal function
-  const newSignalFn = mutation.apply(config);
+  // Generate new signal function, passing hints so mutations can use biased params
+  const newSignalFn = mutation.apply(config, null, hints);
 
   // Replace generateSignals function
   const signalRegex = /function generateSignals\(prices\) \{[\s\S]*?\n\}/;

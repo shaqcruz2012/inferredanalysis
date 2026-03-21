@@ -11,6 +11,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 
 // ─── Order Class ─────────────────────────────────────────
 
@@ -149,6 +150,19 @@ class BacktestEngine {
     this._currentDate = null;
     this._peakEquity = this.initialCapital;
     this._running = false;
+
+    // Circuit breaker simulation mode
+    this.breakerSimulation = options.breakerSimulation ?? false;
+    this.breakerDrawdownHalt = options.breakerDrawdownHalt ?? -0.15;
+    this.breakerDailyLossHalt = options.breakerDailyLossHalt ?? -0.02;
+    this.breakerCooldownBars = options.breakerCooldownBars ?? 20;
+    this._breakerHalted = false;
+    this._breakerHaltedUntilBar = 0;
+    this._breakerHaltReason = "";
+    this._breakerHaltCount = 0;
+    this._breakerBlockedOrders = 0;
+    this._dailyEquityStart = this.initialCapital;
+    this._lastDate = null;
   }
 
   // ─── Data & Strategy Setup ────────────────────────────
@@ -175,6 +189,20 @@ class BacktestEngine {
 
     const order = new Order(symbol, side, qty, type, limitPrice);
     order.createdAt = this._currentDate;
+
+    // Circuit breaker simulation: reject orders when halted
+    if (this.breakerSimulation && this._breakerHalted && this._barIndex < this._breakerHaltedUntilBar) {
+      order.reject(`Circuit breaker halt: ${this._breakerHaltReason}`);
+      this.orders.push(order);
+      this._breakerBlockedOrders++;
+      return order;
+    }
+
+    // Clear breaker if cooldown expired
+    if (this.breakerSimulation && this._breakerHalted && this._barIndex >= this._breakerHaltedUntilBar) {
+      this._breakerHalted = false;
+      this._breakerHaltReason = "";
+    }
 
     // Reject if no data feed
     if (!this.feeds[symbol]) {
@@ -383,6 +411,35 @@ class BacktestEngine {
       if (equity > this._peakEquity) this._peakEquity = equity;
       const dd = this._peakEquity > 0 ? (equity - this._peakEquity) / this._peakEquity : 0;
       this.drawdownCurve.push({ date, drawdown: dd });
+
+      // Circuit breaker simulation: check drawdown and daily loss thresholds
+      if (this.breakerSimulation && !this._breakerHalted) {
+        // Track daily equity reset
+        const dateStr = typeof date === "string" ? date.slice(0, 10) : date;
+        if (dateStr !== this._lastDate) {
+          this._dailyEquityStart = i > 0 ? this.equityCurve[i - 1].equity : this.initialCapital;
+          this._lastDate = dateStr;
+        }
+
+        // Portfolio drawdown check
+        if (dd < this.breakerDrawdownHalt) {
+          this._breakerHalted = true;
+          this._breakerHaltedUntilBar = i + this.breakerCooldownBars;
+          this._breakerHaltReason = `Drawdown ${(dd * 100).toFixed(2)}% breached threshold ${(this.breakerDrawdownHalt * 100).toFixed(0)}%`;
+          this._breakerHaltCount++;
+        }
+
+        // Daily loss check
+        const dailyReturn = this._dailyEquityStart > 0
+          ? (equity - this._dailyEquityStart) / this._dailyEquityStart
+          : 0;
+        if (dailyReturn < this.breakerDailyLossHalt) {
+          this._breakerHalted = true;
+          this._breakerHaltedUntilBar = i + this.breakerCooldownBars;
+          this._breakerHaltReason = `Daily loss ${(dailyReturn * 100).toFixed(2)}% breached threshold ${(this.breakerDailyLossHalt * 100).toFixed(0)}%`;
+          this._breakerHaltCount++;
+        }
+      }
     }
 
     this._running = false;
@@ -460,6 +517,9 @@ class BacktestEngine {
       endDate: eq[eq.length - 1].date,
       equityCurve: eq,
       drawdownCurve: this.drawdownCurve,
+      // Circuit breaker simulation stats (only populated when breakerSimulation=true)
+      breakerHaltCount: this._breakerHaltCount,
+      breakerBlockedOrders: this._breakerBlockedOrders,
     };
   }
 

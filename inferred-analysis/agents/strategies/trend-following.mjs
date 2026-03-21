@@ -15,6 +15,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { validatePriceData, sanitizePrices, safeDiv, safeMean, safeStd } from "../shared/data-validation.mjs";
 
 /**
  * Simple moving average.
@@ -115,6 +116,9 @@ function adx(prices, period = 14) {
  * Donchian Channel breakout signals.
  */
 export function donchianBreakout(prices, lookback = 20) {
+  try {
+  const validation = validatePriceData(prices);
+  if (!validation.valid) { console.error("[donchianBreakout] Invalid price data:", validation.errors[0]); return []; }
   const signals = [];
 
   for (let i = lookback; i < prices.length; i++) {
@@ -137,17 +141,21 @@ export function donchianBreakout(prices, lookback = 20) {
       upper: highest,
       lower: lowest,
       price: current,
-      channelWidth: (highest - lowest) / current,
+      channelWidth: safeDiv(highest - lowest, current),
     });
   }
 
   return signals;
+  } catch (err) { console.error("[donchianBreakout] Signal generation failed:", err.message); return []; }
 }
 
 /**
  * Multi-timeframe moving average crossover.
  */
 export function maCrossover(prices, options = {}) {
+  try {
+  const validation = validatePriceData(prices);
+  if (!validation.valid) { console.error("[maCrossover] Invalid price data:", validation.errors[0]); return []; }
   const { fast = 10, medium = 50, slow = 200 } = options;
   const signals = [];
   const emaFast = ema(prices, fast);
@@ -197,12 +205,16 @@ export function maCrossover(prices, options = {}) {
     });
   }
   return signals;
+  } catch (err) { console.error("[maCrossover] Signal generation failed:", err.message); return []; }
 }
 
 /**
  * Time-series momentum (TSMOM).
  */
 export function timeSeriesMomentum(prices, lookbacks = [21, 63, 126, 252]) {
+  try {
+  const validation = validatePriceData(prices);
+  if (!validation.valid) { console.error("[timeSeriesMomentum] Invalid price data:", validation.errors[0]); return []; }
   const signals = [];
   const maxLookback = Math.max(...lookbacks);
 
@@ -211,7 +223,7 @@ export function timeSeriesMomentum(prices, lookbacks = [21, 63, 126, 252]) {
     const details = {};
 
     for (const lb of lookbacks) {
-      const ret = (prices[i].close - prices[i - lb].close) / prices[i - lb].close;
+      const ret = safeDiv(prices[i].close - prices[i - lb].close, prices[i - lb].close);
       const signal = ret > 0 ? 1 : -1;
       totalSignal += signal;
       details[`mom_${lb}`] = ret;

@@ -20,6 +20,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -513,6 +514,35 @@ async function runPaperTrading(opts) {
   const flats = signals.filter(s => s.signal === 0).length;
   console.log(`  Distribution: LONG=${longs} SHORT=${shorts} FLAT=${flats}`);
 
+  // 4b. Circuit breaker check — block all trading if breakers are tripped
+  const breakerCheck = isTradingHalted(agentRole);
+  if (breakerCheck.halted) {
+    console.log(`\n  CIRCUIT BREAKER HALT: ${breakerCheck.reason}`);
+    console.log("  All trading suspended. No orders will be placed.");
+    console.log(formatBreakerBlock(`paper-trader ${agentRole} ${symbol}`, breakerCheck));
+    logTrade({
+      agent: agentRole,
+      symbol,
+      side: "blocked",
+      qty: 0,
+      price: latestSignal.price,
+      order_id: "circuit_breaker",
+      status: `breaker_halt: ${breakerCheck.reason.slice(0, 60)}`,
+      equity_before: equity,
+      equity_after: equity,
+      daily_pnl: 0,
+      signal_source: agentRole,
+    });
+    return;
+  }
+
+  // Apply position scale from breaker recovery mode
+  const breakerPositionScale = breakerCheck.positionScale;
+  if (breakerPositionScale < 1.0) {
+    console.log(`\n  Circuit breaker recovery mode: position scale ${(breakerPositionScale * 100).toFixed(0)}%`);
+    if (breakerCheck.reason) console.log(`  Reason: ${breakerCheck.reason}`);
+  }
+
   // 5. Determine action based on latest signal
   const currentPosition = positions.find(p => p.symbol === symbol);
   const currentSide = currentPosition
@@ -583,7 +613,11 @@ async function runPaperTrading(opts) {
   if (latestSignal.signal !== 0) {
     const side = latestSignal.signal === 1 ? "buy" : "sell";
     const positionFraction = config.positionSize || 0.10;
-    const tradeCapital = Math.min(equity * positionFraction, SAFETY.maxPositionSize);
+    const scaledFraction = positionFraction * breakerPositionScale;
+    const tradeCapital = Math.min(equity * scaledFraction, SAFETY.maxPositionSize);
+    if (breakerPositionScale < 1.0) {
+      console.log(`  Position scaled by breaker recovery: ${(positionFraction * 100).toFixed(0)}% -> ${(scaledFraction * 100).toFixed(0)}%`);
+    }
     const estimatedPrice = latestSignal.price;
     let qty = Math.floor(tradeCapital / estimatedPrice);
 
