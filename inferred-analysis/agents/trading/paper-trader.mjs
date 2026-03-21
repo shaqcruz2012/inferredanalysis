@@ -23,6 +23,7 @@ import { fileURLToPath } from "url";
 import { appendTSV, initTSV } from "../shared/atomic-writer.mjs";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
+import { getTracker } from "../shared/portfolio-tracker.mjs";
 import { SmartOrderRouter } from "./smart-order-router.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
