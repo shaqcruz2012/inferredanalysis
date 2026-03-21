@@ -456,8 +456,20 @@ async function flattenAll() {
   const result = await alpaca.closeAllPositions();
   console.log("Close all request sent.");
 
-  // Log each closure
+  // Update portfolio tracker and log each closure
+  const tracker = getTracker();
   for (const p of positions) {
+    const flatQty = Math.abs(parseFloat(p.qty));
+    const flatSide = parseFloat(p.qty) > 0 ? "sell" : "buy";
+    tracker.addTrade({
+      symbol: p.symbol,
+      side: flatSide,
+      qty: flatQty,
+      price: parseFloat(p.current_price),
+      agent: "manual_flatten",
+      orderId: "flatten_all",
+    });
+
     logTrade({
       agent: "manual_flatten",
       symbol: p.symbol,
