@@ -96,14 +96,14 @@ function log(msg) {
   console.log(line);
   try {
     mkdirSync(LOG_DIR, { recursive: true });
-    appendFileSync(DAEMON_LOG, line + "\n");
+    atomicAppendFile(DAEMON_LOG, line);
   } catch { /* best effort */ }
 }
 
 // ─── PID Management ─────────────────────────────────────
 
 function writePid() {
-  writeFileSync(PID_FILE, String(process.pid));
+  atomicWriteFile(PID_FILE, String(process.pid));
 }
 
 function readPid() {

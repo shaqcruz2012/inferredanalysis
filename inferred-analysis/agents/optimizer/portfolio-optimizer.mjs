@@ -407,9 +407,13 @@ export function optimizePortfolio(returnArrays, labels = null, options = {}) {
       ? (results.black_litterman.return - riskFreeRate) / results.black_litterman.risk : 0;
   }
 
-  // Post-process all method weights with sector and turnover constraints
+  // Post-process all method weights with position, sector, and turnover constraints
   for (const [method, data] of Object.entries(results)) {
     let w = data.weights;
+
+    // Apply position limits
+    w = applyPositionLimits(w, maxSinglePosition);
+    w = normalizeWeights(w, { targetSum: 1.0 });
 
     // Apply sector constraints if provided
     if (sectors) {
@@ -425,7 +429,8 @@ export function optimizePortfolio(returnArrays, labels = null, options = {}) {
     // Validate final allocation
     const validation = validateAllocation(w, { maxSinglePosition });
     if (!validation.valid) {
-      // Force feasibility: re-normalize
+      // Force feasibility: re-apply limits and normalize
+      w = applyPositionLimits(w, maxSinglePosition);
       w = normalizeWeights(w, { targetSum: 1.0 });
     }
 

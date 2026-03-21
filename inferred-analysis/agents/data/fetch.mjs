@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { safeWriteJSON } from "../shared/atomic-writer.mjs";
 import {
   apiClient,
   CacheTTL,

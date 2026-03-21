@@ -1,79 +1,11 @@
 {
   "version": 1,
-  "createdAt": "2026-03-21T02:46:10.647Z",
-  "updatedAt": "2026-03-21T02:46:23.505Z",
-  "revenue": {
-    "2026-03-21": [
-      {
-        "amount": 0.25,
-        "source": "api-call",
-        "customerId": "ip-1.2.3.4",
-        "ts": "2026-03-21T02:46:19.629Z"
-      },
-      {
-        "amount": 0.1,
-        "source": "api-call",
-        "customerId": "ip-1.2.3.4",
-        "ts": "2026-03-21T02:46:19.629Z"
-      }
-    ]
-  },
-  "expenses": {
-    "2026-03-21": [
-      {
-        "amount": 0.03,
-        "category": "inference",
-        "ts": "2026-03-21T02:46:19.630Z"
-      },
-      {
-        "amount": 0.01,
-        "category": "compute",
-        "ts": "2026-03-21T02:46:19.630Z"
-      }
-    ]
-  },
-  "customers": {
-    "ip-1.2.3.4": [
-      {
-        "eventType": "free-use",
-        "ts": "2026-03-21T02:46:19.628Z"
-      },
-      {
-        "eventType": "paid",
-        "ts": "2026-03-21T02:46:19.629Z"
-      },
-      {
-        "eventType": "paid",
-        "ts": "2026-03-21T02:46:19.629Z"
-      }
-    ],
-    "ip-5.6.7.8": [
-      {
-        "eventType": "free-use",
-        "ts": "2026-03-21T02:46:19.629Z"
-      }
-    ]
-  },
-  "paidCustomers": [
-    "ip-1.2.3.4"
-  ],
-  "latency": {
-    "/api/summarize": [
-      {
-        "ms": 450,
-        "ts": "2026-03-21T02:46:19.630Z"
-      },
-      {
-        "ms": 1200,
-        "ts": "2026-03-21T02:46:19.630Z"
-      }
-    ],
-    "/api/analyze": [
-      {
-        "ms": 800,
-        "ts": "2026-03-21T02:46:19.630Z"
-      }
-    ]
-  },
+  "createdAt": "2026-03-21T02:46:26.930Z",
+  "updatedAt": "2026-03-21T02:46:26.930Z",
+  "revenue": {},
+  "expenses": {},
+  "customers": {},
+  "paidCustomers": [],
+  "latency": {},
   "alerts": []
 }

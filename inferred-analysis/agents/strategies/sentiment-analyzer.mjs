@@ -208,6 +208,10 @@ function generateSyntheticNews(prices, eventsPerDay = 0.3) {
  * Generate trading signals from sentiment data combined with price action.
  */
 export function generateSentimentSignals(prices, events, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[generateSentimentSignals] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const {
     sentimentWindow = 5,     // days of sentiment to aggregate
     priceConfirmation = true, // require price to confirm sentiment
@@ -275,6 +279,7 @@ export function generateSentimentSignals(prices, events, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[generateSentimentSignals] Failed: ${err.message}`); return []; }
 }
 
 // ─── Backtest Integration ───────────────────────────────
