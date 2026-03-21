@@ -16,6 +16,25 @@ import { fileURLToPath } from "url";
 import { execSync } from "child_process";
 import http from "http";
 
+// ─── Graceful Optional Imports ──────────────────────────
+// These modules may not be available in all environments.
+// Each is wrapped in try/catch so the dashboard degrades gracefully.
+
+let _riskGateway = null;
+try {
+  _riskGateway = await import("../shared/risk-gateway.mjs");
+} catch { /* not configured */ }
+
+let _breakerGuard = null;
+try {
+  _breakerGuard = await import("../risk/breaker-guard.mjs");
+} catch { /* not configured */ }
+
+let _dataSourceManager = null;
+try {
+  _dataSourceManager = await import("../data/data-source-manager.mjs");
+} catch { /* not configured */ }
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const RESULTS_TSV = join(ROOT, "agents", "results.tsv");
