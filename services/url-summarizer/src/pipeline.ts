@@ -168,16 +168,24 @@ async function fetchUrl(url: string, timeoutMs: number): Promise<string> {
       throw new Error("Response body too large");
     }
 
-    // Stream with byte cap for chunked responses
+    // Stream with byte cap and per-chunk timeout for chunked responses
     const reader = response.body?.getReader();
     if (!reader) return "";
 
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
+    const CHUNK_TIMEOUT_MS = 30_000; // 30s max wait between chunks
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { done, value } = await reader.read();
+      // Race each chunk read against a timeout to detect stalled streams
+      const chunkResult = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Response stream stalled (timeout between chunks)")), CHUNK_TIMEOUT_MS),
+        ),
+      ]);
+      const { done, value } = chunkResult;
       if (done) break;
       totalBytes += value.length;
       if (totalBytes > MAX_BODY_BYTES) {

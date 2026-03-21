@@ -335,25 +335,44 @@ export class UnifiedInferenceClient {
       }
     }
 
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
-    });
+    // Use a single AbortController for the entire request lifecycle
+    // (fetch initiation + response body read) to prevent hanging
+    const controller = new AbortController();
+    const requestTimeout = setTimeout(() => controller.abort(), 120_000);
+
+    let resp: Response;
+    try {
+      resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(requestTimeout);
+      throw err;
+    }
 
     if (!resp.ok) {
-      const text = await resp.text();
+      const text = await resp.text().catch(() => "(unreadable body)");
+      clearTimeout(requestTimeout);
       const error = new Error(`Anthropic API error: ${resp.status}: ${text}`);
       (error as any).status = resp.status;
       throw error;
     }
 
-    const data = await resp.json() as any;
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      clearTimeout(requestTimeout);
+      throw new Error(`Anthropic API: failed to parse response body: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    clearTimeout(requestTimeout);
     const content = Array.isArray(data.content) ? data.content : [];
     const textBlocks = content.filter((c: any) => c?.type === "text");
     const toolUseBlocks = content.filter((c: any) => c?.type === "tool_use");

@@ -378,4 +378,14 @@ function shutdown(signal: string): void {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
+// Prevent unhandled errors from crashing the server
+process.on("uncaughtException", (err) => {
+  log("error", `Uncaught exception: ${err.message}`, { stack: err.stack });
+});
+
+process.on("unhandledRejection", (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  log("error", `Unhandled rejection: ${message}`);
+});
+
 export { server };

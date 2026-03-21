@@ -360,13 +360,22 @@ async function run(): Promise<void> {
   heartbeat.start();
   logger.info(`[${new Date().toISOString()}] Heartbeat daemon started.`);
 
-  // Handle graceful shutdown
+  // Handle graceful shutdown — allow in-flight work to drain
+  let shuttingDown = false;
   const shutdown = () => {
-    logger.info(`[${new Date().toISOString()}] Shutting down...`);
+    if (shuttingDown) {
+      logger.info(`[${new Date().toISOString()}] Forced shutdown.`);
+      process.exit(1);
+    }
+    shuttingDown = true;
+    logger.info(`[${new Date().toISOString()}] Shutting down gracefully...`);
     heartbeat.stop();
     db.setAgentState("sleeping");
-    db.close();
-    process.exit(0);
+    // Give in-flight operations a short window to complete
+    setTimeout(() => {
+      db.close();
+      process.exit(0);
+    }, 5_000).unref();
   };
 
   process.on("SIGTERM", shutdown);
@@ -428,8 +437,8 @@ async function run(): Promise<void> {
           `[${new Date().toISOString()}] Sleeping for ${Math.round(sleepMs / 1000)}s`,
         );
 
-        // Sleep, but check for wake requests periodically
-        const checkInterval = Math.min(sleepMs, 30_000);
+        // Sleep, but check for wake requests frequently for responsiveness
+        const checkInterval = Math.min(sleepMs, 5_000);
         let slept = 0;
         while (slept < sleepMs) {
           await sleep(checkInterval);

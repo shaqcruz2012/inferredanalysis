@@ -43,8 +43,38 @@ export function proxyRequest(req: ProxyRequest): Promise<ProxyResponse> {
         },
         (proxyRes) => {
           let body = "";
+          let resolved = false;
+
+          // Guard against stalled response streams — if the backend sends
+          // headers but never finishes the body, this timeout fires.
+          const streamTimeout = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              proxyRes.destroy();
+              resolve({
+                status: 504,
+                headers: {},
+                body: JSON.stringify({ error: "Backend response stream timeout" }),
+              });
+            }
+          }, timeout);
+
           proxyRes.on("data", (chunk) => (body += chunk));
+          proxyRes.on("error", () => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(streamTimeout);
+              resolve({
+                status: 503,
+                headers: {},
+                body: JSON.stringify({ error: "Backend response stream error" }),
+              });
+            }
+          });
           proxyRes.on("end", () => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(streamTimeout);
             const headers: Record<string, string> = {};
             for (const [key, val] of Object.entries(proxyRes.headers)) {
               if (typeof val === "string") headers[key] = val;
