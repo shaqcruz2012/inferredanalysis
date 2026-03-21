@@ -137,14 +137,19 @@ export function relativeStrength(priceArrays, options = {}) {
  * Otherwise go to cash (risk-free proxy).
  */
 export function dualMomentum(priceArrays, options = {}) {
+  try {
+  const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[dualMomentum] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+
   const {
     lookback = 126,
     topN = 1,
     rebalanceDays = 21,
     cashSymbol = "TLT", // bonds as cash proxy
   } = options;
-
-  const symbols = Object.keys(priceArrays);
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
 
@@ -186,6 +191,7 @@ export function dualMomentum(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[dualMomentum] Failed: ${err.message}`); return []; }
 }
 
 // ─── Strategy 3: Sector Rotation ────────────────────────

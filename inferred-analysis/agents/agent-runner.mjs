@@ -484,7 +484,7 @@ async function main() {
           content = content.replace(regex, `${key}: ${typeof value === "number" ? value.toFixed(6) : value}`);
         }
       }
-      writeFileSync(stratPath, content);
+      atomicWriteFile(stratPath, content);
 
       const result = runBacktest(stratPath, opts.agent);
       if (!result.ok) return -10;
@@ -604,7 +604,7 @@ async function main() {
       logResult(opts.agent, mutation.name, null, "crash");
       crashCount++;
       // Revert to best
-      writeFileSync(stratPath, bestContent);
+      atomicWriteFile(stratPath, bestContent);
       await reportToP(opts.paperclipUrl, companyId, paperclipAgent?.id, {
         experiment: `${i}/${opts.iterations}`, mutation: mutation.name, status: "crash", metrics: null,
       });
@@ -623,7 +623,7 @@ async function main() {
       logResult(opts.agent, mutation.name, result.metrics, "keep");
     } else {
       console.log(`  DISCARD — Sharpe: ${sharpe.toFixed(4)} <= ${bestSharpe.toFixed(4)} | Return: ${(totalReturn * 100).toFixed(2)}%`);
-      writeFileSync(stratPath, bestContent);
+      atomicWriteFile(stratPath, bestContent);
       discardCount++;
       logResult(opts.agent, mutation.name, result.metrics, "discard");
     }

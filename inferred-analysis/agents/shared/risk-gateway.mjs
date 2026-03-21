@@ -234,6 +234,153 @@ function computeCovMatrix(returnSeries) {
   return matrix;
 }
 
+// ─── Tail Hedger Integration ──────────────────────────────
+
+/**
+ * Compute tail hedge recommendation when portfolio drawdown exceeds the
+ * configured threshold. Only runs when enableTailHedger is true.
+ *
+ * @param {Object} profiles - Strategy profiles from risk-monitor
+ * @param {Object} drawdownMetrics - Computed drawdown metrics
+ * @returns {Object|null} Hedge recommendation or null if not triggered
+ */
+function computeTailHedgeIfNeeded(profiles, drawdownMetrics) {
+  const currentDD = drawdownMetrics.currentDrawdown || 0;
+  const maxDD = drawdownMetrics.maxDrawdown || 0;
+  const effectiveDD = Math.max(currentDD, maxDD);
+
+  // Only compute tail hedge when drawdown exceeds threshold
+  if (effectiveDD < RISK_CONFIG.tailHedgeDrawdownThreshold) {
+    return { triggered: false, drawdown: effectiveDD, threshold: RISK_CONFIG.tailHedgeDrawdownThreshold };
+  }
+
+  // Aggregate return series across all strategy profiles
+  const names = Object.keys(profiles);
+  const allReturns = [];
+  const allPrices = [];
+  let latestPrice = 100; // fallback
+
+  for (const name of names) {
+    const p = profiles[name];
+    if (p.returnSeries && p.returnSeries.length > 0) {
+      allReturns.push(...p.returnSeries);
+    }
+  }
+
+  if (allReturns.length < 10) {
+    return { triggered: true, drawdown: effectiveDD, error: "Insufficient return data for tail hedge analysis" };
+  }
+
+  try {
+    const recommendation = getHedgeRecommendation({
+      returns: allReturns,
+      prices: null,
+      spotPrice: latestPrice,
+      portfolioValue: 1_000_000, // normalized; actual sizing is done per-trade
+    });
+
+    return {
+      triggered: true,
+      drawdown: effectiveDD,
+      threshold: RISK_CONFIG.tailHedgeDrawdownThreshold,
+      regime: recommendation.summary.regime,
+      riskLevel: recommendation.summary.riskLevel,
+      hedgeRatio: recommendation.summary.hedgeRatio,
+      recommendedOTM: recommendation.summary.recommendedOTM,
+      estimatedCostPct: recommendation.summary.costAsPercentOfPortfolio,
+      hedgeEfficiency: recommendation.efficiency.verdict,
+      adjustmentReasons: recommendation.hedgeRatio.reasons,
+    };
+  } catch (err) {
+    return { triggered: true, drawdown: effectiveDD, error: `Tail hedge computation failed: ${err.message}` };
+  }
+}
+
+// ─── Bayesian Risk Integration ────────────────────────────
+
+/**
+ * Compute Bayesian risk assessment from strategy profiles.
+ * Provides posterior-weighted confidence in position sizing and
+ * regime probabilities from the Bayesian model.
+ *
+ * @param {Object} profiles - Strategy profiles from risk-monitor
+ * @returns {Object|null} Bayesian risk assessment
+ */
+function computeBayesianRiskAssessment(profiles) {
+  const names = Object.keys(profiles);
+  if (names.length === 0) return null;
+
+  // Build asset returns map from strategy profiles
+  const assetReturns = {};
+  let hasData = false;
+
+  for (const name of names) {
+    const p = profiles[name];
+    if (p.returnSeries && p.returnSeries.length >= 10) {
+      assetReturns[name] = [...p.returnSeries];
+      hasData = true;
+    }
+  }
+
+  if (!hasData) return null;
+
+  try {
+    const model = new BayesianRiskModel(assetReturns);
+    model.fitPriors(252); // 1-year lookback for prior estimation
+
+    const regimeProbs = model.regimeProbabilities();
+    const predictive = model.predictiveDistribution();
+    const marginalContribs = model.getMarginalContributions();
+
+    // Compute Bayesian Sharpe for each strategy
+    const bayesianSharpes = {};
+    for (const name of Object.keys(assetReturns)) {
+      bayesianSharpes[name] = bayesianSharpe(
+        assetReturns[name],
+        RISK_CONFIG.bayesianPriorSharpe,
+        RISK_CONFIG.bayesianPriorWeight,
+      );
+    }
+
+    // Compute confidence-weighted position scale factor:
+    // If Bayesian Sharpe credible interval includes zero, reduce confidence
+    // If crisis regime probability is high, reduce further
+    let bayesianScaleFactor = 1.0;
+    const crisisProb = regimeProbs.crisis || 0;
+    const bearProb = regimeProbs.bear || 0;
+
+    // Regime-based scaling: reduce position size under adverse regimes
+    if (crisisProb > 0.3) {
+      bayesianScaleFactor *= (1 - crisisProb * 0.6); // crisis = heavy reduction
+    }
+    if (bearProb > 0.5) {
+      bayesianScaleFactor *= (1 - (bearProb - 0.5) * 0.4);
+    }
+
+    // Sharpe credible interval check: if avg lower bound < 0, reduce confidence
+    const sharpeValues = Object.values(bayesianSharpes);
+    if (sharpeValues.length > 0) {
+      const avgLowerCI = sharpeValues.reduce((s, bs) => s + bs.credibleInterval[0], 0) / sharpeValues.length;
+      if (avgLowerCI < 0) {
+        bayesianScaleFactor *= Math.max(0.3, 1 + avgLowerCI * 0.5); // negative CI = less confidence
+      }
+    }
+
+    bayesianScaleFactor = Math.max(0.1, Math.min(1.0, bayesianScaleFactor));
+
+    return {
+      regimeProbabilities: regimeProbs,
+      dominantRegime: Object.entries(regimeProbs).reduce((a, b) => a[1] > b[1] ? a : b)[0],
+      predictive,
+      marginalContributions: marginalContribs,
+      bayesianSharpes,
+      scaleFactor: round4(bayesianScaleFactor),
+    };
+  } catch (err) {
+    return { error: `Bayesian risk computation failed: ${err.message}` };
+  }
+}
+
 // ─── Exported: assessTradeRisk ────────────────────────────
 
 /**

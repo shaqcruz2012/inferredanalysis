@@ -218,14 +218,34 @@ async function main() {
   );
   console.log(`\n# Weights: ${JSON.stringify(weights)}`);
 
-  // 5. Aggregate signals using the chosen method
+  // 5. Check signal overlap and detect regime for alignment method
   const agentSignals = agentResults.map(a => ({
     name: a.name,
     signals: a.signals,
     weight: weights[a.name],
   }));
 
-  const ensembleSignals = aggregateSignals(agentSignals, { method: opts.method });
+  const overlap = getSignalOverlap(agentSignals);
+  console.log(`\n# Signal Overlap: ${overlap.overlapCount}/${overlap.unionCount} dates (${(overlap.overlapPct * 100).toFixed(1)}%)`);
+  for (const [name, stats] of Object.entries(overlap.perSource)) {
+    console.log(`#   ${name}: ${stats.dateCount} dates (${(stats.coveragePct * 100).toFixed(1)}% coverage, ${stats.missingCount} missing)`);
+  }
+
+  // Regime-based alignment: use 'intersection' in high-vol (conservative), 'union' in low-vol
+  let alignMethod = "union";
+  try {
+    const volRegime = detectVolatilityRegime(prices);
+    alignMethod = getRegimeAlignmentMethod({ volatility: volRegime });
+    console.log(`# Volatility regime: ${volRegime.regime} (percentile ${(volRegime.percentile * 100).toFixed(1)}%) -> alignment: ${alignMethod}`);
+  } catch {
+    console.log(`# Regime detection unavailable, using default alignment: ${alignMethod}`);
+  }
+
+  // 5b. Aggregate signals using the chosen method with alignment
+  const ensembleSignals = aggregateSignals(agentSignals, {
+    method: opts.method,
+    alignMethod,
+  });
   console.log(`# Ensemble signals: ${ensembleSignals.length} dates\n`);
 
   if (ensembleSignals.length === 0) {
