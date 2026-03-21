@@ -1,0 +1,32 @@
+{
+  "history": [
+    {
+      "timestamp": "2026-03-21T03:17:35.164Z",
+      "tradeCount": 6,
+      "totalNotional": 260680,
+      "totalCostDollars": 263.92,
+      "totalCostBps": 10.12,
+      "avgCostPerTradeBps": 10.99,
+      "slippage": {
+        "totalDollars": 250,
+        "avgBps": 10.33,
+        "medianBps": 10.84,
+        "stdBps": 4.75,
+        "p95Bps": 16.14
+      },
+      "marketImpact": {
+        "totalDollars": 112.5,
+        "avgBps": 4.85
+      },
+      "timingCost": {
+        "totalDollars": 137.5,
+        "avgBps": 5.47
+      },
+      "commission": {
+        "totalDollars": 13.92,
+        "avgBps": 0.67
+      }
+    }
+  ],
+  "lastUpdated": "2026-03-21T03:17:35.164Z"
+}

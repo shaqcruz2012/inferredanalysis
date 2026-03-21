@@ -1,0 +1,680 @@
+#!/usr/bin/env node
+/**
+ * Agent Runner — Autoresearch Loop for Paperclip Agents
+ *
+ * This is the bridge between Paperclip (agent management) and autoresearch (self-improvement).
+ * When Paperclip wakes an agent, this runner:
+ *   1. Reads the agent's assigned task from Paperclip
+ *   2. Loads the agent's strategy file (their version of template.js)
+ *   3. Runs the autoresearch loop: hypothesize → modify → backtest → evaluate → keep/discard
+ *   4. Reports results back to Paperclip
+ *   5. Logs experiment to results.tsv
+ *
+ * Usage:
+ *   node agents/agent-runner.mjs                          # Run with defaults
+ *   node agents/agent-runner.mjs --agent alpha_researcher  # Run specific agent
+ *   node agents/agent-runner.mjs --iterations 10           # Run N experiments
+ *   node agents/agent-runner.mjs --paperclip-url http://localhost:3100 --company-id <id>
+ *
+ * Each agent gets its own strategy file in agents/strategies/<role>.js
+ * The autoresearch loop modifies the generateSignals() function, backtests, and keeps/discards.
+ */
+
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
+import { execSync } from "child_process";
+import { dirname, join } from "path";
+import { appendTSV, initTSV, atomicWriteFile } from "./shared/atomic-writer.mjs";
+import { fileURLToPath } from "url";
+import {
+  loadFeedback,
+  getRecommendedMutation,
+  getParameterHints,
+  buildLineageRecord,
+  formatLineageLog,
+  formatFeedbackSummary,
+  biasedRandomInt,
+  biasedRandom,
+} from "./shared/feedback-loop.mjs";
+import { isTradingHalted, formatBreakerBlock } from "./risk/breaker-guard.mjs";
+import { getPortfolioRiskScore, getRiskLimits } from "./shared/risk-gateway.mjs";
+import { GeneticOptimizer } from "./optimizer/genetic-strategy.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, "..");
+
+// ─── CLI Args ────────────────────────────────────────────
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const opts = {
+    agent: "alpha_researcher",
+    iterations: 5,
+    paperclipUrl: "http://localhost:3100",
+    companyId: null,
+    useGenetic: false,
+    geneticPopulation: 30,
+    geneticGenerations: 20,
+    geneticEliteCount: 5,
+  };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--agent") opts.agent = args[++i];
+    if (args[i] === "--iterations") opts.iterations = parseInt(args[++i]);
+    if (args[i] === "--paperclip-url") opts.paperclipUrl = args[++i];
+    if (args[i] === "--company-id") opts.companyId = args[++i];
+    if (args[i] === "--genetic") opts.useGenetic = true;
+    if (args[i] === "--genetic-population") opts.geneticPopulation = parseInt(args[++i]);
+    if (args[i] === "--genetic-generations") opts.geneticGenerations = parseInt(args[++i]);
+    if (args[i] === "--genetic-elite") opts.geneticEliteCount = parseInt(args[++i]);
+  }
+  return opts;
+}
+
+// ─── Strategy Mutations ──────────────────────────────────
+
+/**
+ * Library of strategy mutations an agent can apply.
+ * Each mutation modifies the generateSignals function and CONFIG.
+ */
+const MUTATIONS = [
+  {
+    name: "mean_reversion",
+    description: "Mean reversion: buy when price drops below moving average, sell when above",
+    apply(config, signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      config.lookback = biasedRandomInt(10, 49, lb, conf);
+      config.threshold = biasedRandom(0.005, 0.035, tb, conf);
+      return `function generateSignals(prices) {
+  const signals = [];
+  const lookback = ${config.lookback};
+  const threshold = ${config.threshold.toFixed(4)};
+  for (let i = lookback; i < prices.length; i++) {
+    let sum = 0;
+    for (let j = i - lookback; j < i; j++) sum += prices[j].close;
+    const ma = sum / lookback;
+    const deviation = (prices[i].close - ma) / ma;
+    let signal = 0;
+    if (deviation < -threshold) signal = 1;   // buy dip
+    if (deviation > threshold) signal = -1;    // sell rally
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+  {
+    name: "momentum_crossover",
+    description: "Dual moving average crossover momentum strategy",
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const fast = biasedRandomInt(5, 19, lb, conf);
+      const slow = fast + biasedRandomInt(10, 39, lb, conf);
+      config.lookback = slow;
+      return `function generateSignals(prices) {
+  const signals = [];
+  const fast = ${fast}, slow = ${slow};
+  for (let i = slow; i < prices.length; i++) {
+    let fastSum = 0, slowSum = 0;
+    for (let j = i - fast; j < i; j++) fastSum += prices[j].close;
+    for (let j = i - slow; j < i; j++) slowSum += prices[j].close;
+    const fastMA = fastSum / fast;
+    const slowMA = slowSum / slow;
+    let signal = 0;
+    if (fastMA > slowMA * 1.001) signal = 1;
+    if (fastMA < slowMA * 0.999) signal = -1;
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+  {
+    name: "volatility_breakout",
+    description: "Breakout strategy based on volatility expansion",
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(10, 29, lb, conf);
+      const volMult = biasedRandom(1.0, 3.0, tb, conf);
+      config.lookback = lookback;
+      return `function generateSignals(prices) {
+  const signals = [];
+  const lookback = ${lookback};
+  const volMult = ${volMult.toFixed(3)};
+  for (let i = lookback; i < prices.length; i++) {
+    let sum = 0, sqSum = 0;
+    for (let j = i - lookback; j < i; j++) {
+      const ret = (prices[j].close - prices[j-1 >= 0 ? j-1 : 0].close) / prices[j-1 >= 0 ? j-1 : 0].close;
+      sum += ret;
+      sqSum += ret * ret;
+    }
+    const mean = sum / lookback;
+    const vol = Math.sqrt(sqSum / lookback - mean * mean);
+    const todayRet = (prices[i].close - prices[i-1].close) / prices[i-1].close;
+    let signal = 0;
+    if (todayRet > vol * volMult) signal = 1;
+    if (todayRet < -vol * volMult) signal = -1;
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+  {
+    name: "rsi_contrarian",
+    description: "RSI-based contrarian strategy — buy oversold, sell overbought",
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const period = biasedRandomInt(7, 27, lb, conf);
+      const oversold = biasedRandomInt(20, 34, tb, conf);
+      const overbought = 100 - oversold;
+      config.lookback = period;
+      return `function generateSignals(prices) {
+  const signals = [];
+  const period = ${period};
+  for (let i = period + 1; i < prices.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period; j < i; j++) {
+      const change = prices[j+1].close - prices[j].close;
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    const rs = avgLoss > 0 ? avgGain / avgLoss : 100;
+    const rsi = 100 - 100 / (1 + rs);
+    let signal = 0;
+    if (rsi < ${oversold}) signal = 1;    // oversold → buy
+    if (rsi > ${overbought}) signal = -1;  // overbought → sell
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+  {
+    name: "adaptive_momentum",
+    description: "Momentum with adaptive threshold based on recent volatility",
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const tb = hints?.suggestedThresholdBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(15, 39, lb, conf);
+      const volWindow = biasedRandomInt(5, 19, lb, conf);
+      const sensitivity = biasedRandom(0.5, 2.5, tb, conf);
+      config.lookback = lookback;
+      return `function generateSignals(prices) {
+  const signals = [];
+  const lookback = ${lookback};
+  const volWindow = ${volWindow};
+  const sensitivity = ${sensitivity.toFixed(3)};
+  for (let i = Math.max(lookback, volWindow + 1); i < prices.length; i++) {
+    const current = prices[i].close;
+    const past = prices[i - lookback].close;
+    const momentum = (current - past) / past;
+    let volSum = 0;
+    for (let j = i - volWindow; j < i; j++) {
+      const ret = Math.abs((prices[j].close - prices[j-1].close) / prices[j-1].close);
+      volSum += ret;
+    }
+    const avgVol = volSum / volWindow;
+    const threshold = avgVol * sensitivity;
+    let signal = 0;
+    if (momentum > threshold) signal = 1;
+    if (momentum < -threshold) signal = -1;
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+  {
+    name: "price_channel",
+    description: "Donchian channel breakout — buy at highs, sell at lows",
+    apply(config, _signalFn, hints) {
+      const lb = hints?.suggestedLookbackBias ?? 0;
+      const conf = hints?.confidence ?? 0;
+      const lookback = biasedRandomInt(10, 49, lb, conf);
+      config.lookback = lookback;
+      return `function generateSignals(prices) {
+  const signals = [];
+  const lookback = ${lookback};
+  for (let i = lookback; i < prices.length; i++) {
+    let highest = -Infinity, lowest = Infinity;
+    for (let j = i - lookback; j < i; j++) {
+      if (prices[j].high > highest) highest = prices[j].high;
+      if (prices[j].low < lowest) lowest = prices[j].low;
+    }
+    let signal = 0;
+    if (prices[i].close > highest) signal = 1;
+    if (prices[i].close < lowest) signal = -1;
+    signals.push({ date: prices[i].date, signal, price: prices[i].close });
+  }
+  return signals;
+}`;
+    },
+  },
+];
+
+// ─── Strategy File Management ────────────────────────────
+
+function getStrategyPath(agentRole) {
+  return join(ROOT, "agents", "strategies", `${agentRole}.js`);
+}
+
+function ensureStrategyFile(agentRole) {
+  const stratPath = getStrategyPath(agentRole);
+  if (!existsSync(stratPath)) {
+    const templatePath = join(ROOT, "agents", "backtests", "template.js");
+    mkdirSync(dirname(stratPath), { recursive: true });
+    copyFileSync(templatePath, stratPath);
+  }
+  return stratPath;
+}
+
+function applyMutation(stratPath, mutation, hints) {
+  let content = readFileSync(stratPath, "utf-8");
+
+  // Parse current CONFIG
+  const configMatch = content.match(/const CONFIG = \{([^}]+)\}/s);
+  const config = {
+    lookback: 20,
+    threshold: 0.02,
+    stopLoss: -0.05,
+    takeProfit: 0.10,
+    positionSize: 0.10,
+  };
+
+  // Generate new signal function, passing hints so mutations can use biased params
+  const newSignalFn = mutation.apply(config, null, hints);
+
+  // Replace generateSignals function
+  const signalRegex = /function generateSignals\(prices\) \{[\s\S]*?\n\}/;
+  if (signalRegex.test(content)) {
+    content = content.replace(signalRegex, newSignalFn);
+  }
+
+  // Update CONFIG lookback
+  content = content.replace(/lookback: \d+/, `lookback: ${config.lookback}`);
+  if (config.threshold !== undefined) {
+    content = content.replace(/threshold: [\d.]+/, `threshold: ${config.threshold.toFixed(4)}`);
+  }
+
+  atomicWriteFile(stratPath, content);
+  return config;
+}
+
+// ─── Backtest Runner ─────────────────────────────────────
+
+// Map agents to their focus symbols
+const AGENT_SYMBOLS = {
+  alpha_researcher: "SPY",
+  stat_arb_quant: "QQQ",
+  macro_quant: "TLT",
+  vol_quant: "SPY",
+  hf_quant: "AAPL",
+  microstructure_researcher: "IWM",
+  econ_researcher: "GLD",
+};
+
+function runBacktest(stratPath, agentRole) {
+  const symbol = AGENT_SYMBOLS[agentRole] || "SPY";
+  try {
+    const output = execSync(`node "${stratPath}"`, {
+      cwd: ROOT,
+      timeout: 30_000,
+      encoding: "utf-8",
+      env: { ...process.env, SYMBOL: symbol },
+    });
+
+    // Parse metrics
+    const metrics = {};
+    const lines = output.split("\n");
+    for (const line of lines) {
+      const match = line.match(/^(\w+):\s+(.+)$/);
+      if (match) {
+        const key = match[1].trim();
+        let val = match[2].trim();
+        if (val.endsWith("%")) val = parseFloat(val) / 100;
+        else val = parseFloat(val);
+        if (!isNaN(val)) metrics[key] = val;
+      }
+    }
+    return { ok: true, metrics, raw: output };
+  } catch (err) {
+    return { ok: false, error: err.message, metrics: null, raw: err.stderr || err.message };
+  }
+}
+
+// ─── Results Logger ──────────────────────────────────────
+
+function logResult(agent, experiment, metrics, status) {
+  const resultsPath = join(ROOT, "agents", "results.tsv");
+  const header = "timestamp\tagent\texperiment\tsharpe\tsortino\tcalmar\ttotal_return\tmax_drawdown\twin_rate\ttrades\tstatus";
+
+  const line = [
+    new Date().toISOString(),
+    agent,
+    experiment,
+    metrics?.sharpe?.toFixed(4) ?? "0",
+    metrics?.sortino?.toFixed(4) ?? "0",
+    metrics?.calmar?.toFixed(4) ?? "0",
+    metrics?.total_return?.toFixed(4) ?? "0",
+    metrics?.max_drawdown?.toFixed(4) ?? "0",
+    metrics?.win_rate?.toFixed(4) ?? "0",
+    metrics?.trades ?? 0,
+    status,
+  ].join("\t");
+
+  appendTSV(resultsPath, line, header);
+}
+
+// ─── Paperclip Integration ──────────────────────────────
+
+async function paperclipApi(baseUrl, method, path, body) {
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function findAgent(baseUrl, companyId, agentRole) {
+  const agents = await paperclipApi(baseUrl, "GET", `/api/companies/${companyId}/agents`);
+  if (!agents) return null;
+  return agents.find(a => a.capabilities?.includes(`[${agentRole}]`)) || null;
+}
+
+async function reportToP(baseUrl, companyId, agentId, result) {
+  // Create an issue in Paperclip with experiment results
+  if (!companyId || !agentId) return;
+  try {
+    await paperclipApi(baseUrl, "POST", `/api/companies/${companyId}/issues`, {
+      title: `Experiment: ${result.experiment} — ${result.mutation}`,
+      body: `**Strategy**: ${result.mutation}\n**Sharpe**: ${result.metrics?.sharpe?.toFixed(4) ?? 'N/A'}\n**Status**: ${result.status}\n**Total Return**: ${((result.metrics?.total_return ?? 0) * 100).toFixed(2)}%`,
+      assigneeAgentId: agentId,
+      priority: result.status === "keep" ? "high" : "medium",
+    });
+  } catch {
+    // Paperclip reporting is best-effort
+  }
+}
+
+// ─── Main Loop ───────────────────────────────────────────
+
+async function main() {
+  const opts = parseArgs();
+  console.log(`\n╔══════════════════════════════════════════════════╗`);
+  console.log(`║  Autoresearch Agent Runner                       ║`);
+  console.log(`║  Agent: ${opts.agent.padEnd(40)}║`);
+  console.log(`║  Iterations: ${String(opts.iterations).padEnd(35)}║`);
+  console.log(`╚══════════════════════════════════════════════════╝\n`);
+
+  // Circuit breaker pre-flight check
+  const preFlightBreaker = isTradingHalted(opts.agent);
+  if (preFlightBreaker.halted) {
+    console.log(formatBreakerBlock(`agent-runner pre-flight ${opts.agent}`, preFlightBreaker));
+    console.log(`\n  CIRCUIT BREAKER: Agent ${opts.agent} is halted. Skipping all experiments.`);
+    console.log(`  Reason: ${preFlightBreaker.reason}\n`);
+    process.exit(0);
+  }
+
+  // Setup strategy file
+  const stratPath = ensureStrategyFile(opts.agent);
+  console.log(`Strategy file: ${stratPath}\n`);
+
+  // Load feedback from prior experiments
+  const resultsPath = join(ROOT, "agents", "results.tsv");
+  let feedback = loadFeedback(resultsPath);
+  console.log(formatFeedbackSummary(feedback));
+  console.log();
+
+  // Get baseline
+  console.log("Running baseline...");
+  const baseline = runBacktest(stratPath, opts.agent);
+  let bestSharpe = baseline.ok ? (baseline.metrics.sharpe ?? -Infinity) : -Infinity;
+  console.log(`Baseline Sharpe: ${bestSharpe.toFixed(4)}\n`);
+  logResult(opts.agent, "baseline", baseline.metrics, "baseline");
+
+  // Save baseline strategy
+  const baselineContent = readFileSync(stratPath, "utf-8");
+
+  // Find Paperclip agent if available
+  let paperclipAgent = null;
+  let companyId = opts.companyId;
+  if (!companyId) {
+    const companies = await paperclipApi(opts.paperclipUrl, "GET", "/api/companies");
+    if (companies?.length > 0) companyId = companies[0].id;
+  }
+  if (companyId) {
+    paperclipAgent = await findAgent(opts.paperclipUrl, companyId, opts.agent);
+    if (paperclipAgent) {
+      console.log(`Paperclip agent: ${paperclipAgent.name} [${paperclipAgent.id}]\n`);
+    }
+  }
+
+  // ─── Genetic Evolution Path (opt-in via --genetic) ──────
+  // Uses GeneticOptimizer as an alternative to random mutation.
+  // Evolves a population of strategy parameter sets, scored by Sharpe/Sortino,
+  // and keeps the top N elite genomes across generations.
+  if (opts.useGenetic) {
+    console.log(`\n─── Genetic Strategy Evolution (enabled via --genetic) ───`);
+    console.log(`  Population: ${opts.geneticPopulation}  Generations: ${opts.geneticGenerations}  Elite: ${opts.geneticEliteCount}\n`);
+
+    // Build a fitness function that backtests a genome by writing it to the
+    // strategy file, running the existing backtest harness, and scoring with
+    // a blend of Sharpe and Sortino (matching evaluate.js risk_adjusted_returns criteria).
+    const geneticFitness = (genome, _prices) => {
+      // Write genome params into the strategy file as CONFIG overrides
+      let content = readFileSync(stratPath, "utf-8");
+      for (const [key, value] of Object.entries(genome)) {
+        const regex = new RegExp(`${key}:\\s*[\\d.\\-]+`);
+        if (regex.test(content)) {
+          content = content.replace(regex, `${key}: ${typeof value === "number" ? value.toFixed(6) : value}`);
+        }
+      }
+      atomicWriteFile(stratPath, content);
+
+      const result = runBacktest(stratPath, opts.agent);
+      if (!result.ok) return -10;
+
+      const sharpe = result.metrics.sharpe ?? -Infinity;
+      const sortino = result.metrics.sortino ?? sharpe;
+      // Blended fitness: 60% Sharpe + 40% Sortino, penalize extreme drawdowns
+      const ddPenalty = (result.metrics.max_drawdown ?? 0) > 0.20
+        ? (result.metrics.max_drawdown - 0.20) * 5
+        : 0;
+      return 0.6 * sharpe + 0.4 * sortino - ddPenalty;
+    };
+
+    const optimizer = new GeneticOptimizer({
+      populationSize: opts.geneticPopulation,
+      generations: opts.geneticGenerations,
+      eliteCount: opts.geneticEliteCount,
+      mutationRate: 0.15,
+      fitnessFunction: geneticFitness,
+    });
+
+    // GeneticOptimizer.evolve() expects a prices array for default fitness;
+    // our custom fitness ignores it, so pass an empty array.
+    const evoResult = optimizer.evolve([]);
+
+    console.log(`\n─── Genetic Evolution Complete ───`);
+    console.log(`  Best Fitness (blended Sharpe/Sortino): ${evoResult.bestFitness.toFixed(4)}`);
+    console.log(`  Best Genome:`);
+    for (const [key, value] of Object.entries(evoResult.bestGenome)) {
+      console.log(`    ${key.padEnd(14)} = ${typeof value === "number" ? value.toFixed(4) : value}`);
+    }
+
+    // Apply the best genome to the strategy file and run final backtest
+    geneticFitness(evoResult.bestGenome, []);
+    const finalGenetic = runBacktest(stratPath, opts.agent);
+    if (finalGenetic.ok) {
+      const gSharpe = finalGenetic.metrics.sharpe ?? -Infinity;
+      if (gSharpe > bestSharpe) {
+        console.log(`  Genetic result BEATS baseline: ${gSharpe.toFixed(4)} > ${bestSharpe.toFixed(4)}`);
+        bestSharpe = gSharpe;
+        logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "keep");
+      } else {
+        console.log(`  Genetic result does not beat baseline: ${gSharpe.toFixed(4)} <= ${bestSharpe.toFixed(4)}`);
+        atomicWriteFile(stratPath, baselineContent);
+        logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "discard");
+      }
+    } else {
+      console.log(`  Genetic best genome failed backtest — reverting to baseline`);
+      atomicWriteFile(stratPath, baselineContent);
+    }
+
+    // Log elite population for future seeding
+    if (evoResult.finalPopulation) {
+      const elitePath = join(ROOT, "agents", "outputs", `${opts.agent}_genetic_elite.json`);
+      const eliteData = evoResult.finalPopulation
+        .slice(0, opts.geneticEliteCount)
+        .map((genome, i) => ({ rank: i + 1, genome, fitness: evoResult.history[evoResult.history.length - 1]?.bestFitness ?? 0 }));
+      mkdirSync(dirname(elitePath), { recursive: true });
+      writeFileSync(elitePath, JSON.stringify(eliteData, null, 2));
+      console.log(`  Elite population saved: ${elitePath}`);
+    }
+
+    console.log();
+  }
+
+  // Autoresearch loop
+  let keepCount = 0;
+  let discardCount = 0;
+  let crashCount = 0;
+  let bestContent = baselineContent;
+  let bestMutationName = "baseline";
+
+  for (let i = 1; i <= opts.iterations; i++) {
+    // Circuit breaker check before each experiment
+    const iterBreaker = isTradingHalted(opts.agent);
+    if (iterBreaker.halted) {
+      console.log(formatBreakerBlock(`agent-runner experiment ${i} ${opts.agent}`, iterBreaker));
+      console.log(`  CIRCUIT BREAKER: Trading halted mid-run. Stopping experiments.`);
+      console.log(`  Reason: ${iterBreaker.reason}`);
+      break;
+    }
+
+    // Reload feedback periodically so new results inform mutation selection
+    if (i > 1 && (i - 1) % 5 === 0) {
+      feedback = loadFeedback(resultsPath);
+      console.log(`  [feedback] Reloaded: ${feedback.totalExperiments} experiments in history`);
+    }
+
+    // Use feedback to select mutation (weighted by past performance)
+    const recommendation = getRecommendedMutation(opts.agent, MUTATIONS, feedback);
+    const mutation = recommendation.mutation;
+
+    // Get parameter hints for the selected mutation
+    const hints = getParameterHints(opts.agent, mutation.name, feedback);
+
+    // Build lineage record (parent -> child)
+    const lineage = buildLineageRecord(
+      opts.agent, bestMutationName, mutation.name, bestSharpe, recommendation
+    );
+
+    console.log(`─── Experiment ${i}/${opts.iterations}: ${mutation.name} ───`);
+    console.log(`  ${mutation.description}`);
+    console.log(`  [feedback] Selection: ${recommendation.reason}`);
+    if (hints.hasData) {
+      console.log(`  [feedback] Param hints: lookbackBias=${hints.suggestedLookbackBias.toFixed(2)}, thresholdBias=${hints.suggestedThresholdBias.toFixed(2)}, confidence=${hints.confidence.toFixed(2)}`);
+    }
+    console.log(formatLineageLog(lineage));
+
+    // Apply mutation with feedback-driven parameter hints
+    applyMutation(stratPath, mutation, hints);
+
+    // Run backtest
+    const result = runBacktest(stratPath, opts.agent);
+
+    if (!result.ok) {
+      console.log(`  CRASH: ${result.error?.slice(0, 100)}`);
+      logResult(opts.agent, mutation.name, null, "crash");
+      crashCount++;
+      // Revert to best
+      atomicWriteFile(stratPath, bestContent);
+      await reportToP(opts.paperclipUrl, companyId, paperclipAgent?.id, {
+        experiment: `${i}/${opts.iterations}`, mutation: mutation.name, status: "crash", metrics: null,
+      });
+      continue;
+    }
+
+    const sharpe = result.metrics.sharpe ?? -Infinity;
+    const totalReturn = result.metrics.total_return ?? 0;
+
+    // Portfolio risk score for experiment context
+    let riskScore = 0;
+    try { riskScore = getPortfolioRiskScore(); } catch { /* unavailable */ }
+    if (riskScore > 0) {
+      const riskPenalty = riskScore > 60 ? (1 - (riskScore - 60) / 200) : 1.0;
+      console.log(`  [risk] Portfolio risk score: ${riskScore}/100 | Risk-adj Sharpe: ${(sharpe * riskPenalty).toFixed(4)}`);
+    }
+
+    if (sharpe > bestSharpe) {
+      console.log(`  KEEP — Sharpe: ${sharpe.toFixed(4)} (was ${bestSharpe.toFixed(4)}) | Return: ${(totalReturn * 100).toFixed(2)}%`);
+      bestSharpe = sharpe;
+      bestContent = readFileSync(stratPath, "utf-8");
+      bestMutationName = mutation.name;
+      keepCount++;
+      logResult(opts.agent, mutation.name, result.metrics, "keep");
+    } else {
+      console.log(`  DISCARD — Sharpe: ${sharpe.toFixed(4)} <= ${bestSharpe.toFixed(4)} | Return: ${(totalReturn * 100).toFixed(2)}%`);
+      atomicWriteFile(stratPath, bestContent);
+      discardCount++;
+      logResult(opts.agent, mutation.name, result.metrics, "discard");
+    }
+
+    await reportToP(opts.paperclipUrl, companyId, paperclipAgent?.id, {
+      experiment: `${i}/${opts.iterations}`, mutation: mutation.name,
+      status: sharpe > bestSharpe ? "keep" : "discard", metrics: result.metrics,
+      riskScore,
+    });
+  }
+
+  // Summary with risk context
+  let finalRiskScore = 0;
+  let finalRiskLimits = null;
+  try {
+    finalRiskScore = getPortfolioRiskScore();
+    finalRiskLimits = getRiskLimits();
+  } catch { /* risk gateway unavailable */ }
+
+  console.log(`\n╔══════════════════════════════════════════════════╗`);
+  console.log(`║  Results Summary                                 ║`);
+  console.log(`╠══════════════════════════════════════════════════╣`);
+  console.log(`║  Best Sharpe:  ${bestSharpe.toFixed(4).padEnd(34)}║`);
+  console.log(`║  Kept:         ${String(keepCount).padEnd(34)}║`);
+  console.log(`║  Discarded:    ${String(discardCount).padEnd(34)}║`);
+  console.log(`║  Crashed:      ${String(crashCount).padEnd(34)}║`);
+  console.log(`║  Keep Rate:    ${((keepCount / opts.iterations) * 100).toFixed(1).padEnd(31)}%  ║`);
+  console.log(`║  Risk Score:   ${String(finalRiskScore + '/100').padEnd(34)}║`);
+  if (finalRiskLimits) {
+    console.log(`║  Risk Regime:  ${finalRiskLimits.regime.padEnd(34)}║`);
+    console.log(`║  Pos. Scale:   ${((finalRiskLimits.positionLimits.positionScaleFactor * 100).toFixed(0) + '%').padEnd(34)}║`);
+  }
+  console.log(`╚══════════════════════════════════════════════════╝\n`);
+
+  // Run final backtest with best strategy
+  const finalResult = runBacktest(stratPath, opts.agent);
+  if (finalResult.ok) {
+    console.log("Final best strategy metrics:");
+    console.log(finalResult.raw);
+  }
+}
+
+main().catch(err => {
+  console.error("Agent runner failed:", err.message);
+  process.exit(1);
+});

@@ -1,0 +1,9 @@
+[
+  {
+    "module": "data-quality-pipeline",
+    "symbol": "SPY",
+    "timestamp": "2026-03-21T03:15:30.309Z",
+    "reason": "Direct call to generateRealisticPrices()",
+    "migrated": false
+  }
+]

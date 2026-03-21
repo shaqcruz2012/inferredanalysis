@@ -38,3 +38,16 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Packages
+*.tgz
+
+# Automaton
+.automaton/wallet.json
+.automaton/state.db
