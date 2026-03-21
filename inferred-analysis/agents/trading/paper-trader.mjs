@@ -498,6 +498,11 @@ async function runPaperTrading(opts) {
   const positions = await alpaca.getPositions();
   const guard = new SafetyGuard(account);
 
+  // Initialize portfolio tracker and sync with broker state
+  const tracker = getTracker({ initialCash: parseFloat(account.cash) });
+  tracker.syncFromBroker(positions, account.cash, account.equity);
+  console.log(`  Portfolio tracker: synced (${positions.length} positions, NAV $${tracker.getNAV().toLocaleString()})`);
+
   console.log(`  Open positions: ${positions.length}`);
   console.log(`  Safety limits:  max_position=$${SAFETY.maxPositionSize} max_daily_loss=$${SAFETY.maxDailyLoss} max_positions=${SAFETY.maxOpenPositions}`);
 

@@ -565,12 +565,14 @@ export function ensureFeasible(weights, options = {}) {
     w = applySectorConstraints(w, sectors, maxSectorExposure);
   }
 
-  // Step 4: Normalize to target sum
-  w = normalizeWeights(w, { targetSum, longOnly });
+  // Step 4: Normalize to target sum with position cap
+  w = normalizeWeights(w, { targetSum, longOnly, maxWeight: maxSinglePosition });
 
   // Step 5: Apply turnover constraint if old weights provided
   if (oldWeights) {
     w = applyTurnoverConstraint(w, oldWeights, maxTurnover);
+    // Re-apply position limits after turnover blending (blending can push above cap)
+    w = normalizeWeights(w, { targetSum, longOnly, maxWeight: maxSinglePosition });
   }
 
   return w;
