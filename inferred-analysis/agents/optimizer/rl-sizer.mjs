@@ -20,10 +20,12 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampParam } from "../shared/constraints.mjs";
 
 // ─── Constants ───────────────────────────────────────────
 
-const ACTIONS = [0.0, 0.25, 0.5, 0.75, 1.0]; // position sizes
+// Position sizes bounded by BOUNDS.positionSize.max
+const ACTIONS = [0.0, 0.25, 0.5, 0.75, 1.0].map(a => Math.min(a, BOUNDS.positionSize.max * 2)); // *2 because these are fraction of capital, not portfolio weight
 const ACTION_LABELS = ["0%", "25%", "50%", "75%", "100%"];
 
 // State discretization bins
@@ -134,12 +136,12 @@ export class RLSizer {
    * @param {number} opts.replayCapacity Replay buffer capacity (default 10000)
    */
   constructor(opts = {}) {
-    this.alpha = opts.alpha ?? 0.1;
-    this.gamma = opts.gamma ?? 0.95;
-    this.epsilon = opts.epsilon ?? 1.0;
-    this.epsilonMin = opts.epsilonMin ?? 0.05;
-    this.epsilonDecay = opts.epsilonDecay ?? 0.995;
-    this.replayBatch = opts.replayBatch ?? 32;
+    this.alpha = clampParam("learningRate", opts.alpha ?? 0.1);
+    this.gamma = clampParam("discount", opts.gamma ?? 0.95);
+    this.epsilon = clampParam("epsilon", opts.epsilon ?? 1.0);
+    this.epsilonMin = clampParam("epsilon", opts.epsilonMin ?? 0.05);
+    this.epsilonDecay = Math.max(0.9, Math.min(0.9999, opts.epsilonDecay ?? 0.995));
+    this.replayBatch = Math.max(1, Math.min(256, opts.replayBatch ?? 32));
 
     // Q-table: Map from state key -> array of Q-values per action
     this.Q = new Map();
@@ -205,8 +207,15 @@ export class RLSizer {
       if (qNext[i] > maxNextQ) maxNextQ = qNext[i];
     }
 
-    // Q-learning update
-    qCurrent[action] += this.alpha * (reward + this.gamma * maxNextQ - qCurrent[action]);
+    // Clamp reward to prevent Q-value explosion
+    const clampedReward = Math.max(-100, Math.min(100, reward));
+
+    // Q-learning update with bounded target
+    const target = clampedReward + this.gamma * maxNextQ;
+    qCurrent[action] += this.alpha * (target - qCurrent[action]);
+
+    // Clamp Q-values to sane range
+    qCurrent[action] = Math.max(-1000, Math.min(1000, qCurrent[action]));
   }
 
   /**

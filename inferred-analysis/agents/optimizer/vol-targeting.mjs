@@ -12,6 +12,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampParam } from "../shared/constraints.mjs";
 
 // ─── Rolling Volatility Estimators ──────────────────────
 

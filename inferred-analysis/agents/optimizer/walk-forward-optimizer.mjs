@@ -149,14 +149,21 @@ export class WalkForwardOptimizer {
       const avgDegradation = oosResults.reduce((s, r) => s + r.degradation, 0) / oosResults.length;
       const sharpeStd = Math.sqrt(oosResults.reduce((s, r) => s + (r.testSharpe - avgTestSharpe) ** 2, 0) / oosResults.length);
 
+      // Out-of-sample validation: flag suspicious results
+      const oosValid = !isNaN(avgTestSharpe) && isFinite(avgTestSharpe)
+        && avgTestSharpe >= BOUNDS.minSharpe && avgTestSharpe <= BOUNDS.maxSharpe;
+      const overfitRisk = avgDegradation > 0.5 ? "HIGH" : avgDegradation > 0.3 ? "MODERATE" : "LOW";
+
       results.push({
         params,
-        avgTrainSharpe,
-        avgTestSharpe,
+        avgTrainSharpe: clampSharpe(avgTrainSharpe),
+        avgTestSharpe: clampSharpe(avgTestSharpe),
         sharpeStd,
         avgDegradation,
         stability: sharpeStd > 0 ? avgTestSharpe / sharpeStd : 0,
         folds: oosResults,
+        oosValid,
+        overfitRisk,
       });
     }
 

@@ -35,6 +35,8 @@ import {
   biasedRandom,
 } from "./shared/feedback-loop.mjs";
 import { isTradingHalted, formatBreakerBlock } from "./risk/breaker-guard.mjs";
+import { getPortfolioRiskScore, getRiskLimits } from "./shared/risk-gateway.mjs";
+import { GeneticOptimizer } from "./optimizer/genetic-strategy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -48,12 +50,20 @@ function parseArgs() {
     iterations: 5,
     paperclipUrl: "http://localhost:3100",
     companyId: null,
+    useGenetic: false,
+    geneticPopulation: 30,
+    geneticGenerations: 20,
+    geneticEliteCount: 5,
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--agent") opts.agent = args[++i];
     if (args[i] === "--iterations") opts.iterations = parseInt(args[++i]);
     if (args[i] === "--paperclip-url") opts.paperclipUrl = args[++i];
     if (args[i] === "--company-id") opts.companyId = args[++i];
+    if (args[i] === "--genetic") opts.useGenetic = true;
+    if (args[i] === "--genetic-population") opts.geneticPopulation = parseInt(args[++i]);
+    if (args[i] === "--genetic-generations") opts.geneticGenerations = parseInt(args[++i]);
+    if (args[i] === "--genetic-elite") opts.geneticEliteCount = parseInt(args[++i]);
   }
   return opts;
 }

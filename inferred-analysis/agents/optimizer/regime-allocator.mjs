@@ -13,6 +13,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, normalizeWeights, applyPositionLimits, validateAllocation, applyTurnoverConstraint } from "../shared/constraints.mjs";
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -218,11 +219,25 @@ export class RegimeAllocator {
       }
     }
 
-    // Normalize to sum to 1
-    const total = Object.values(blended).reduce((s, v) => s + v, 0);
-    if (total > 0) for (const k of Object.keys(blended)) blended[k] /= total;
+    // Normalize to sum to 1 using shared normalizeWeights
+    const assets = Object.keys(blended);
+    const rawWeights = assets.map(a => blended[a] || 0);
+    const normalized = normalizeWeights(rawWeights, { targetSum: 1.0, longOnly: true });
 
-    return { weights: blended, probabilities };
+    // Apply position limits
+    const bounded = applyPositionLimits(normalized, BOUNDS.maxSinglePosition);
+
+    // Re-normalize after clamping
+    const final = normalizeWeights(bounded, { targetSum: 1.0, longOnly: true });
+
+    const result = {};
+    for (let i = 0; i < assets.length; i++) {
+      result[assets[i]] = final[i];
+    }
+
+    // Validate
+    const validation = validateAllocation(final);
+    return { weights: result, probabilities, validation };
   }
 
   /**
@@ -249,7 +264,21 @@ export class RegimeAllocator {
         for (const a of assets) windowPrices[a] = priceArrays[a].slice(0, i + 2); // +2 because returns is 1 shorter
         const detection = this.detectRegime(windowPrices, lookback);
         currentRegime = detection.regime;
-        currentWeights = this.getAllocation(currentRegime);
+        const newTargetWeights = this.getAllocation(currentRegime);
+
+        // Apply turnover constraint: limit how fast we shift allocations
+        if (currentWeights) {
+          const oldArr = assets.map(a => currentWeights[a] || 0);
+          const newArr = assets.map(a => newTargetWeights[a] || 0);
+          const constrained = applyTurnoverConstraint(newArr, oldArr, BOUNDS.maxTurnover);
+          const normalized = normalizeWeights(constrained, { targetSum: 1.0, longOnly: true });
+          currentWeights = {};
+          for (let j = 0; j < assets.length; j++) {
+            currentWeights[assets[j]] = normalized[j];
+          }
+        } else {
+          currentWeights = newTargetWeights;
+        }
       }
 
       this.regimeHistory.push({ index: i, regime: currentRegime });

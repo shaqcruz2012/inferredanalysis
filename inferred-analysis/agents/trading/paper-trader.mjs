@@ -696,6 +696,26 @@ async function runPaperTrading(opts) {
       console.log(`  Adjusted qty to ${qty}`);
     }
 
+    // Apply risk gateway adjusted size (computed earlier in step 5b)
+    const riskAdjQty = assessTradeRisk(
+      { symbol, side, qty, price: estimatedPrice, agent: agentRole },
+      {
+        equity, cash: parseFloat(account.cash || account.buying_power || 0),
+        positions: positions.map(p => ({
+          symbol: p.symbol, qty: parseFloat(p.qty),
+          value: Math.abs(parseFloat(p.qty)) * parseFloat(p.current_price),
+        })),
+      }
+    ).adjustedSize;
+    if (riskAdjQty < qty) {
+      console.log(`  Risk gateway reduced size: ${qty} -> ${riskAdjQty}`);
+      qty = riskAdjQty;
+      if (qty < 1) {
+        console.log("  Risk gateway reduced size to zero. Skipping order.");
+        return;
+      }
+    }
+
     console.log(`\nPlacing order: ${side.toUpperCase()} ${qty} ${symbol} (market, ~$${(estimatedPrice * qty).toFixed(2)})...`);
     if (opts.dryRun) {
       console.log("  [DRY RUN] Would place order");

@@ -114,23 +114,38 @@ export function testCointegration(pricesA, pricesB, significance = -2.86) {
  * Find all cointegrated pairs from a set of assets.
  */
 export function findPairs(priceArrays, significance = -2.86) {
-  const symbols = Object.keys(priceArrays);
-  const pairs = [];
+  try {
+    const symbols = Object.keys(priceArrays);
+    if (symbols.length < 2) return [];
 
-  for (let i = 0; i < symbols.length; i++) {
-    for (let j = i + 1; j < symbols.length; j++) {
-      const result = testCointegration(priceArrays[symbols[i]], priceArrays[symbols[j]], significance);
-      if (result.cointegrated && result.halfLife > 1 && result.halfLife < 126) {
-        pairs.push({
-          symbolA: symbols[i],
-          symbolB: symbols[j],
-          ...result,
-        });
+    for (const sym of symbols) {
+      const v = validatePriceData(priceArrays[sym]);
+      if (!v.valid) {
+        console.error(`[findPairs] Invalid price data for ${sym}: ${v.errors.join("; ")}`);
+        return [];
       }
     }
-  }
 
-  return pairs.sort((a, b) => a.adf - b.adf); // most cointegrated first
+    const pairs = [];
+
+    for (let i = 0; i < symbols.length; i++) {
+      for (let j = i + 1; j < symbols.length; j++) {
+        const result = testCointegration(priceArrays[symbols[i]], priceArrays[symbols[j]], significance);
+        if (result.cointegrated && result.halfLife > 1 && result.halfLife < 126) {
+          pairs.push({
+            symbolA: symbols[i],
+            symbolB: symbols[j],
+            ...result,
+          });
+        }
+      }
+    }
+
+    return pairs.sort((a, b) => a.adf - b.adf); // most cointegrated first
+  } catch (err) {
+    console.error(`[findPairs] Failed: ${err.message}`);
+    return [];
+  }
 }
 
 // ─── Z-Score Spread Calculation ─────────────────────────
@@ -170,52 +185,64 @@ export function computeSpread(pricesA, pricesB, hedgeRatio, window = 21) {
  * Generate pairs trading signals from spread z-scores.
  */
 export function pairsStrategy(pricesA, pricesB, options = {}) {
-  const {
-    hedgeRatio = 1,
-    lookback = 21,
-    entryZ = 2.0,
-    exitZ = 0.5,
-    stopZ = 4.0,
-    positionSize = 0.10,
-  } = options;
-
-  const spread = computeSpread(pricesA, pricesB, hedgeRatio, lookback);
-  const signals = [];
-  let inPosition = 0; // 1 = long spread, -1 = short spread, 0 = flat
-
-  for (let i = lookback; i < spread.length; i++) {
-    const z = spread[i].zScore;
-    if (z === undefined) continue;
-
-    let signal = inPosition;
-
-    // Entry signals
-    if (inPosition === 0) {
-      if (z < -entryZ) signal = 1;  // spread too low → long spread (buy A, sell B)
-      if (z > entryZ) signal = -1;  // spread too high → short spread (sell A, buy B)
+  try {
+    const validA = validatePriceData(pricesA);
+    const validB = validatePriceData(pricesB);
+    if (!validA.valid || !validB.valid) {
+      console.error("[pairsStrategy] Invalid price data");
+      return [];
     }
 
-    // Exit signals
-    if (inPosition === 1 && z > -exitZ) signal = 0;
-    if (inPosition === -1 && z < exitZ) signal = 0;
+    const {
+      hedgeRatio = 1,
+      lookback = 21,
+      entryZ = 2.0,
+      exitZ = 0.5,
+      stopZ = 4.0,
+      positionSize = 0.10,
+    } = options;
 
-    // Stop loss
-    if (inPosition === 1 && z < -stopZ) signal = 0;
-    if (inPosition === -1 && z > stopZ) signal = 0;
+    const spread = computeSpread(pricesA, pricesB, hedgeRatio, lookback);
+    const signals = [];
+    let inPosition = 0; // 1 = long spread, -1 = short spread, 0 = flat
 
-    inPosition = signal;
+    for (let i = lookback; i < spread.length; i++) {
+      const z = spread[i].zScore;
+      if (z === undefined) continue;
 
-    signals.push({
-      date: spread[i].date,
-      signal,
-      zScore: z,
-      spread: spread[i].value,
-      priceA: spread[i].priceA,
-      priceB: spread[i].priceB,
-    });
+      let signal = inPosition;
+
+      // Entry signals
+      if (inPosition === 0) {
+        if (z < -entryZ) signal = 1;  // spread too low → long spread (buy A, sell B)
+        if (z > entryZ) signal = -1;  // spread too high → short spread (sell A, buy B)
+      }
+
+      // Exit signals
+      if (inPosition === 1 && z > -exitZ) signal = 0;
+      if (inPosition === -1 && z < exitZ) signal = 0;
+
+      // Stop loss
+      if (inPosition === 1 && z < -stopZ) signal = 0;
+      if (inPosition === -1 && z > stopZ) signal = 0;
+
+      inPosition = signal;
+
+      signals.push({
+        date: spread[i].date,
+        signal,
+        zScore: z,
+        spread: spread[i].value,
+        priceA: spread[i].priceA,
+        priceB: spread[i].priceB,
+      });
+    }
+
+    return signals;
+  } catch (err) {
+    console.error(`[pairsStrategy] Failed: ${err.message}`);
+    return [];
   }
-
-  return signals;
 }
 
 /**

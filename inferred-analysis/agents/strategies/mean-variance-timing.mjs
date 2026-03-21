@@ -13,6 +13,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-validation.mjs";
 
 /**
  * Ledoit-Wolf shrinkage for covariance estimation.

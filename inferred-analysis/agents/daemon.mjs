@@ -25,6 +25,12 @@ import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, unl
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { isTradingHalted, isPortfolioHalted, getBreakerSummary, formatBreakerBlock } from "./risk/breaker-guard.mjs";
+import {
+  evaluateAndAct,
+  collectSystemMetrics,
+  writeHealthCheckFile,
+  createNotifyFn,
+} from "./shared/health-actions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -291,6 +297,32 @@ async function main() {
         log(`Circuit breaker: Agent ${agent} in recovery mode (scale: ${(agentBreaker.positionScale * 100).toFixed(0)}%)`);
       }
       runAgentCycle(agent, opts.iterations, opts.paperclipUrl);
+    }
+
+    // ─── Health evaluation ─────────────────────────────────
+    try {
+      const healthMetrics = collectSystemMetrics();
+      const notifyFn = createNotifyFn(
+        process.env.TELEGRAM_BOT_TOKEN || "",
+        process.env.TELEGRAM_CHAT_ID || "",
+      );
+      const healthResult = await evaluateAndAct(healthMetrics, { notifyFn });
+      if (healthResult.alerts.length > 0) {
+        log(`Health alerts: ${healthResult.alerts.length} (${healthResult.overallSeverity})`);
+        for (const alert of healthResult.alerts) {
+          log(`  [${alert.severity.toUpperCase()}] ${alert.message}`);
+        }
+        if (healthResult.actions.length > 0) {
+          log(`Health actions taken: ${healthResult.actions.length}`);
+          for (const action of healthResult.actions) {
+            log(`  [${action.success ? "OK" : "FAIL"}] ${action.detail}`);
+          }
+        }
+      }
+      // Write health check file for external monitoring
+      writeHealthCheckFile();
+    } catch (healthErr) {
+      log(`Health evaluation error: ${healthErr.message}`);
     }
 
     // Send notification report every full rotation (after all 7 agents have run)

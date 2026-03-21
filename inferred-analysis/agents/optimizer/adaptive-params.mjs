@@ -15,6 +15,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampParam } from "../shared/constraints.mjs";
 
 // ─── Adaptive Scheduler ─────────────────────────────────
 
@@ -23,12 +24,12 @@ export class AdaptiveScheduler {
     this.baseParams = { ...baseParams };
     this.currentParams = { ...baseParams };
     this.history = []; // { date, params, return, sharpe }
-    this.windowSize = options.windowSize || 21;
-    this.adaptRate = options.adaptRate || 0.05;
-    this.minScale = options.minScale || 0.3;
-    this.maxScale = options.maxScale || 3.0;
-    this.drawdownThreshold = options.drawdownThreshold || 0.05;
-    this.streakThreshold = options.streakThreshold || 5;
+    this.windowSize = Math.max(5, Math.min(252, options.windowSize || 21));
+    this.adaptRate = clampParam("learningRate", options.adaptRate || 0.05);
+    this.minScale = Math.max(0.1, options.minScale || 0.3);
+    this.maxScale = Math.min(5.0, options.maxScale || 3.0);
+    this.drawdownThreshold = Math.max(0.01, Math.min(0.50, options.drawdownThreshold || 0.05));
+    this.streakThreshold = Math.max(2, Math.min(20, options.streakThreshold || 5));
   }
 
   /**
@@ -57,7 +58,9 @@ export class AdaptiveScheduler {
       const recentVol = this._std(recentReturns) * Math.sqrt(252);
       const baseVol = 0.15; // assumed baseline annual vol
       const volRatio = baseVol / Math.max(recentVol, 0.01);
-      this.currentParams.positionSize = this.baseParams.positionSize * Math.max(this.minScale, Math.min(this.maxScale, volRatio));
+      const rawSize = this.baseParams.positionSize * Math.max(this.minScale, Math.min(this.maxScale, volRatio));
+      // Enforce position size bounds
+      this.currentParams.positionSize = clampParam("positionSize", rawSize);
     }
 
     this.history.push({
@@ -140,7 +143,8 @@ export class AdaptiveScheduler {
       if (this.currentParams[key] !== undefined) {
         const expanded = this.currentParams[key] * factor;
         const maxVal = this.baseParams[key] * this.maxScale;
-        this.currentParams[key] = Math.min(expanded, maxVal);
+        // Apply BOUNDS constraints on expanded parameters
+        this.currentParams[key] = clampParam(key, Math.min(expanded, maxVal));
       }
     }
   }
@@ -213,16 +217,20 @@ export class BayesianParamOptimizer {
    * Update beliefs based on observed performance with given params.
    */
   observe(params, performance) {
-    this.observations.push({ params: { ...params }, performance });
+    // Clamp performance to prevent extreme belief updates
+    const clampedPerf = Math.max(-10, Math.min(10, performance));
+    this.observations.push({ params: { ...params }, performance: clampedPerf });
 
     for (const [name, belief] of Object.entries(this.beliefs)) {
       if (params[name] === undefined) continue;
 
       // Performance-weighted update: if performance is good, move belief toward used value
-      const obsVar = belief.variance * (1 + Math.exp(-performance * 10));
+      const obsVar = belief.variance * (1 + Math.exp(-clampedPerf * 10));
       const updated = bayesianUpdate(belief.mean, belief.variance, params[name], obsVar);
       belief.mean = Math.max(belief.min, Math.min(belief.max, updated.mean));
       belief.variance = Math.max(updated.variance, (belief.mean * 0.01) ** 2); // floor variance
+      // Cap variance to prevent divergence
+      belief.variance = Math.min(belief.variance, (belief.max - belief.min) ** 2);
     }
   }
 

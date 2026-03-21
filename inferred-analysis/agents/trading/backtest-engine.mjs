@@ -12,6 +12,7 @@
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
+import { computeRiskAdjustedSize, getPortfolioRiskScore } from "../shared/risk-gateway.mjs";
 
 // ─── Order Class ─────────────────────────────────────────
 
@@ -162,6 +163,12 @@ class BacktestEngine {
     this._breakerHaltCount = 0;
     this._breakerBlockedOrders = 0;
     this._dailyEquityStart = this.initialCapital;
+
+    // Risk gateway integration
+    this.riskAdjustedSizing = options.riskAdjustedSizing ?? false;
+    this._riskBlockedOrders = 0;
+    this._riskAdjustedOrders = 0;
+    this._strategyMetrics = options.strategyMetrics ?? {};
     this._lastDate = null;
   }
 
@@ -211,10 +218,32 @@ class BacktestEngine {
       return order;
     }
 
+    // Risk gateway: adjust position size based on portfolio risk level
+    if (this.riskAdjustedSizing) {
+      try {
+        const { adjustedSize, scaleFactor, method } = computeRiskAdjustedSize(
+          order.qty, this._strategyMetrics
+        );
+        const adjustedQty = Math.floor(adjustedSize);
+        if (adjustedQty <= 0) {
+          order.reject(`Risk gateway blocked: scale=${scaleFactor} method=${method}`);
+          this.orders.push(order);
+          this._riskBlockedOrders++;
+          return order;
+        }
+        if (adjustedQty < order.qty) {
+          order.qty = adjustedQty;
+          this._riskAdjustedOrders++;
+        }
+      } catch {
+        // Risk gateway unavailable — proceed with original size
+      }
+    }
+
     // Margin check for new buys
     if (side === OrderSide.BUY) {
       const price = this._currentBar[symbol]?.close ?? 0;
-      const cost = qty * price * this.marginReq;
+      const cost = order.qty * price * this.marginReq;
       if (cost > this.cash) {
         order.reject("Insufficient margin");
         this.orders.push(order);
@@ -520,6 +549,9 @@ class BacktestEngine {
       // Circuit breaker simulation stats (only populated when breakerSimulation=true)
       breakerHaltCount: this._breakerHaltCount,
       breakerBlockedOrders: this._breakerBlockedOrders,
+      // Risk gateway stats (only populated when riskAdjustedSizing=true)
+      riskBlockedOrders: this._riskBlockedOrders,
+      riskAdjustedOrders: this._riskAdjustedOrders,
     };
   }
 
@@ -629,6 +661,15 @@ class BacktestEngine {
       pad("Avg Loser", usd(r.avgLoss)),
       pad("Profit Factor", r.profitFactor.toFixed(2)),
       pad("Total Commission", usd(r.totalCommission)),
+      ...(r.riskBlockedOrders > 0 || r.riskAdjustedOrders > 0 ? [
+        "",
+        `  ${line}`,
+        `  RISK GATEWAY`,
+        `  ${line}`,
+        "",
+        pad("Risk-Blocked Orders", r.riskBlockedOrders),
+        pad("Risk-Adjusted Orders", r.riskAdjustedOrders),
+      ] : []),
       "",
       `  ${line}`,
       `  EQUITY CURVE`,

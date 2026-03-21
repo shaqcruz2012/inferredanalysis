@@ -15,6 +15,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-validation.mjs";
 
 // ─── Realized Volatility Estimators ─────────────────────
 

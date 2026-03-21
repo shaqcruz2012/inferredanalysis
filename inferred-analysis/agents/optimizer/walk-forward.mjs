@@ -239,7 +239,13 @@ const MUTATIONS = [
   },
 ];
 
-// ─── Backtest Engine (mirrors template.js) ────────────────
+// ─── Backtest Engine (shared module) ──────────────────────
+
+import {
+  runBacktest as _sharedRunBacktest,
+  computeMetrics,
+  computeDrawdown,
+} from "../shared/backtest-engine.mjs";
 
 const BACKTEST_CONFIG = {
   initialCapital: 1_000_000,
@@ -248,92 +254,11 @@ const BACKTEST_CONFIG = {
   positionSize: 0.10,
 };
 
+/**
+ * Wrapper preserving original (prices, signals) call signature.
+ */
 function runBacktest(prices, signals) {
-  const cfg = BACKTEST_CONFIG;
-  let capital = cfg.initialCapital;
-  let position = 0;
-  let trades = 0;
-  let peakEquity = capital;
-  let maxDrawdown = 0;
-  const dailyReturns = [];
-  let prevEquity = capital;
-
-  for (const sig of signals) {
-    const targetPosition = sig.signal;
-    const currentPosition = position > 0 ? 1 : position < 0 ? -1 : 0;
-
-    if (targetPosition !== currentPosition) {
-      if (position !== 0) {
-        const proceeds = position * sig.price;
-        const costBps = (cfg.transactionCostBps + cfg.slippageBps) / 10000;
-        const cost = Math.abs(proceeds) * costBps;
-        capital += proceeds - cost;
-        position = 0;
-        trades++;
-      }
-      if (targetPosition !== 0) {
-        const tradeCapital = capital * cfg.positionSize;
-        const costBps = (cfg.transactionCostBps + cfg.slippageBps) / 10000;
-        const cost = tradeCapital * costBps;
-        position = (targetPosition * (tradeCapital - cost)) / sig.price;
-        capital -= tradeCapital;
-        trades++;
-      }
-    }
-
-    const equity = capital + position * sig.price;
-    const dailyReturn = (equity - prevEquity) / prevEquity;
-    dailyReturns.push(dailyReturn);
-    prevEquity = equity;
-
-    if (equity > peakEquity) peakEquity = equity;
-    const drawdown = (peakEquity - equity) / peakEquity;
-    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
-  }
-
-  // Close final position
-  if (position !== 0 && signals.length > 0) {
-    const lastPrice = signals[signals.length - 1].price;
-    capital += position * lastPrice;
-    position = 0;
-  }
-
-  return computeMetrics(capital, dailyReturns, maxDrawdown, trades);
-}
-
-function computeMetrics(finalCapital, dailyReturns, maxDrawdown, trades) {
-  const n = dailyReturns.length;
-  if (n < 2) return null;
-
-  const cfg = BACKTEST_CONFIG;
-  const totalReturn = (finalCapital - cfg.initialCapital) / cfg.initialCapital;
-  const annualizedReturn = Math.pow(1 + totalReturn, 252 / n) - 1;
-
-  const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / n;
-  const variance = dailyReturns.reduce((sum, r) => sum + (r - meanReturn) ** 2, 0) / (n - 1);
-  const stdDev = Math.sqrt(variance);
-  const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0;
-
-  const downsideReturns = dailyReturns.filter(r => r < 0);
-  const downsideVariance = downsideReturns.length > 0
-    ? downsideReturns.reduce((sum, r) => sum + r ** 2, 0) / downsideReturns.length
-    : 0;
-  const downsideDev = Math.sqrt(downsideVariance);
-  const sortino = downsideDev > 0 ? (meanReturn / downsideDev) * Math.sqrt(252) : 0;
-
-  const calmar = maxDrawdown > 0 ? annualizedReturn / maxDrawdown : 0;
-
-  return {
-    total_return: totalReturn,
-    annualized_return: annualizedReturn,
-    sharpe,
-    sortino,
-    calmar,
-    max_drawdown: maxDrawdown,
-    trades,
-    days: n,
-    final_capital: finalCapital,
-  };
+  return _sharedRunBacktest(signals, BACKTEST_CONFIG);
 }
 
 // ─── Window Splitter ──────────────────────────────────────

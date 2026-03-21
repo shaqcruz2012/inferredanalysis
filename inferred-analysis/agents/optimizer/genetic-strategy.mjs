@@ -16,6 +16,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampSharpe, clampParam } from "../shared/constraints.mjs";
 
 // ─── Genome (Strategy Parameter Set) ────────────────────
 
@@ -67,8 +68,13 @@ export function crossover(parent1, parent2, paramSpec, crossoverRate = 0.7) {
     const p2 = parent2[key];
     const low = Math.min(p1, p2) - alpha * Math.abs(p1 - p2);
     const high = Math.max(p1, p2) + alpha * Math.abs(p1 - p2);
-    child[key] = Math.max(paramSpec[key].min, Math.min(paramSpec[key].max, low + Math.random() * (high - low)));
+    // Hard-clamp to spec bounds (BLX-alpha can exceed range)
+    const specMin = paramSpec[key].min;
+    const specMax = paramSpec[key].max;
+    child[key] = Math.max(specMin, Math.min(specMax, low + Math.random() * (high - low)));
     if (paramSpec[key].integer) child[key] = Math.round(child[key]);
+    // Ensure integer rounding didn't push us out of bounds
+    child[key] = Math.max(specMin, Math.min(specMax, child[key]));
   }
 
   return child;
@@ -98,7 +104,11 @@ export function mutate(genome, paramSpec, mutationRate = 0.1, mutationStrength =
  * Run a momentum backtest with given parameters and return fitness (Sharpe).
  */
 function backtestFitness(genome, prices) {
-  const { lookback, threshold, stopLoss, takeProfit, positionSize } = genome;
+  const lookback = clampParam("lookback", genome.lookback);
+  const threshold = clampParam("threshold", genome.threshold);
+  const stopLoss = clampParam("stopLoss", genome.stopLoss);
+  const takeProfit = clampParam("takeProfit", genome.takeProfit);
+  const positionSize = clampParam("positionSize", genome.positionSize);
 
   // Generate signals
   const signals = [];
@@ -156,7 +166,8 @@ function backtestFitness(genome, prices) {
   // Penalize excessive trading
   const tradePenalty = trades > 500 ? (trades - 500) * 0.001 : 0;
 
-  return sharpe - tradePenalty;
+  // Clamp to reject overfitted results
+  return clampSharpe(sharpe - tradePenalty);
 }
 
 // ─── Genetic Optimizer ──────────────────────────────────
@@ -263,13 +274,13 @@ export class GeneticOptimizer {
         nextGen.push(child);
       }
 
-      // Adaptive mutation: increase mutation when stagnating
+      // Adaptive mutation: increase mutation when stagnating, bounded by BOUNDS
       if (stagnation > 3) {
-        this.mutationRate = Math.min(0.5, this.mutationRate * 1.1);
-        this.mutationStrength = Math.min(0.5, this.mutationStrength * 1.1);
+        this.mutationRate = clampParam("mutationRate", this.mutationRate * 1.1);
+        this.mutationStrength = clampParam("mutationStrength", this.mutationStrength * 1.1);
       } else {
-        this.mutationRate = Math.max(0.05, this.mutationRate * 0.95);
-        this.mutationStrength = Math.max(0.05, this.mutationStrength * 0.95);
+        this.mutationRate = clampParam("mutationRate", this.mutationRate * 0.95);
+        this.mutationStrength = clampParam("mutationStrength", this.mutationStrength * 0.95);
       }
 
       population = nextGen;

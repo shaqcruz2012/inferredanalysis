@@ -20,6 +20,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-validation.mjs";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -104,6 +105,7 @@ function rsi(prices, n = 14) {
  * Long top performers, short bottom (or go to cash if no shorting).
  */
 export function cryptoMomentum(priceArrays, options = {}) {
+  try {
   const {
     lookback = 30,
     holdPeriod = 7,
@@ -113,6 +115,11 @@ export function cryptoMomentum(priceArrays, options = {}) {
   } = options;
 
   const symbols = Object.keys(priceArrays);
+  if (symbols.length === 0) return [];
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[cryptoMomentum] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
 
@@ -152,6 +159,7 @@ export function cryptoMomentum(priceArrays, options = {}) {
     });
   }
   return signals;
+  } catch (err) { console.error(`[cryptoMomentum] Failed: ${err.message}`); return []; }
 }
 
 // ─── 2. Mean Reversion (RSI + Z-Score) ───────────────────
@@ -161,6 +169,7 @@ export function cryptoMomentum(priceArrays, options = {}) {
  * Contrarian: buy oversold, sell overbought.
  */
 export function cryptoMeanReversion(priceArrays, options = {}) {
+  try {
   const {
     rsiPeriod = 14,
     rsiOverbought = 75,
@@ -168,6 +177,11 @@ export function cryptoMeanReversion(priceArrays, options = {}) {
     zPeriod = 20,
     zThreshold = 2.0,
   } = options;
+
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[cryptoMeanReversion] Invalid data for ${sym}: ${v.errors.join("; ")}`); return {}; }
+  }
 
   const results = {};
 
@@ -213,6 +227,7 @@ export function cryptoMeanReversion(priceArrays, options = {}) {
     results[symbol] = signals;
   }
   return results;
+  } catch (err) { console.error(`[cryptoMeanReversion] Failed: ${err.message}`); return {}; }
 }
 
 // ─── 3. Breakout Strategy (ATR Channels) ─────────────────
@@ -222,6 +237,10 @@ export function cryptoMeanReversion(priceArrays, options = {}) {
  * 24/7 trading means ATR is computed on calendar days.
  */
 export function cryptoBreakout(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[cryptoBreakout] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const {
     atrPeriod = 14,
     channelMultiplier = 2.5,
