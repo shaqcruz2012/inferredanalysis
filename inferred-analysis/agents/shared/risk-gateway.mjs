@@ -737,6 +737,16 @@ export function getRiskLimits() {
       effectivePositions: round4(state.concentrationMetrics.effectiveN),
       diversificationRatio: round4(state.concentrationMetrics.diversificationRatio),
     },
+
+    // Opt-in module state (null when disabled)
+    tailHedge: state.tailHedgeRecommendation || null,
+    bayesianRisk: state.bayesianRiskAssessment
+      ? {
+          dominantRegime: state.bayesianRiskAssessment.dominantRegime,
+          regimeProbabilities: state.bayesianRiskAssessment.regimeProbabilities,
+          scaleFactor: state.bayesianRiskAssessment.scaleFactor,
+        }
+      : null,
   };
 }
 
@@ -809,4 +819,26 @@ export function computeRiskAdjustedSize(requestedSize, strategyMetrics = {}) {
 export function invalidateRiskCache() {
   _cachedRiskState = null;
   _cacheTimestamp = 0;
+}
+
+/**
+ * Configure opt-in risk modules at runtime.
+ * Allows callers to enable tail-hedger, bayesian-risk, or both
+ * without modifying source code.
+ *
+ * @param {Object} overrides - Config keys to override
+ * @param {boolean} [overrides.enableTailHedger] - Enable tail hedge recommendations
+ * @param {number}  [overrides.tailHedgeDrawdownThreshold] - Drawdown % that triggers tail hedge
+ * @param {boolean} [overrides.enableBayesianRisk] - Enable Bayesian risk model
+ * @param {number}  [overrides.bayesianPriorSharpe] - Prior Sharpe for Bayesian estimation
+ * @param {number}  [overrides.bayesianPriorWeight] - Weight of prior vs sample (0-1)
+ */
+export function configureRiskModules(overrides = {}) {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key in RISK_CONFIG) {
+      RISK_CONFIG[key] = value;
+    }
+  }
+  // Invalidate cache so next assessment uses new config
+  invalidateRiskCache();
 }

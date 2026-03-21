@@ -118,19 +118,14 @@ function logAction(msg) {
 // ─── State Persistence ──────────────────────────────────
 
 function loadState() {
-  try {
-    if (existsSync(HEALTH_STATE_FILE)) {
-      return JSON.parse(readFileSync(HEALTH_STATE_FILE, "utf-8"));
-    }
-  } catch { /* fresh state */ }
-  return {
+  return safeReadJSON(HEALTH_STATE_FILE, {
     sharpeBaselines: {},
     lastAlerts: [],
     lastActions: [],
     lastCheck: null,
     alertHistory: [],
     actionHistory: [],
-  };
+  });
 }
 
 function saveState(state) {
@@ -142,7 +137,7 @@ function saveState(state) {
     if (state.actionHistory.length > 500) {
       state.actionHistory = state.actionHistory.slice(-500);
     }
-    writeFileSync(HEALTH_STATE_FILE, JSON.stringify(state, null, 2));
+    safeWriteJSON(HEALTH_STATE_FILE, state);
   } catch { /* best effort */ }
 }
 
@@ -847,7 +842,7 @@ export function writeHealthCheckFile() {
   };
 
   try {
-    writeFileSync(HEALTH_CHECK_FILE, JSON.stringify(healthCheck, null, 2));
+    safeWriteJSON(HEALTH_CHECK_FILE, healthCheck);
   } catch (err) {
     logAction(`Failed to write health check file: ${err.message}`);
   }

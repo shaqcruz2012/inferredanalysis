@@ -14,20 +14,23 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, normalizeWeights } from "../shared/constraints.mjs";
 
 /**
  * Compute turnover between two weight vectors.
- * @returns {{ oneWay: number, twoWay: number }}
+ * @returns {{ oneWay: number, twoWay: number, exceedsBound: boolean }}
  */
 export function computeTurnover(oldWeights, newWeights) {
   const symbols = new Set([...Object.keys(oldWeights), ...Object.keys(newWeights)]);
   let totalChange = 0;
 
   for (const sym of symbols) {
-    totalChange += Math.abs((newWeights[sym] || 0) - (oldWeights[sym] || 0));
+    const oldW = Number.isFinite(oldWeights[sym]) ? oldWeights[sym] : 0;
+    const newW = Number.isFinite(newWeights[sym]) ? newWeights[sym] : 0;
+    totalChange += Math.abs(newW - oldW);
   }
 
-  return { oneWay: totalChange / 2, twoWay: totalChange };
+  return { oneWay: totalChange / 2, twoWay: totalChange, exceedsBound: totalChange / 2 > BOUNDS.maxTurnover };
 }
 
 /**

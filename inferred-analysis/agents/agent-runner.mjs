@@ -643,7 +643,14 @@ async function main() {
     });
   }
 
-  // Summary
+  // Summary with risk context
+  let finalRiskScore = 0;
+  let finalRiskLimits = null;
+  try {
+    finalRiskScore = getPortfolioRiskScore();
+    finalRiskLimits = getRiskLimits();
+  } catch { /* risk gateway unavailable */ }
+
   console.log(`\n╔══════════════════════════════════════════════════╗`);
   console.log(`║  Results Summary                                 ║`);
   console.log(`╠══════════════════════════════════════════════════╣`);
@@ -652,6 +659,11 @@ async function main() {
   console.log(`║  Discarded:    ${String(discardCount).padEnd(34)}║`);
   console.log(`║  Crashed:      ${String(crashCount).padEnd(34)}║`);
   console.log(`║  Keep Rate:    ${((keepCount / opts.iterations) * 100).toFixed(1).padEnd(31)}%  ║`);
+  console.log(`║  Risk Score:   ${String(finalRiskScore + '/100').padEnd(34)}║`);
+  if (finalRiskLimits) {
+    console.log(`║  Risk Regime:  ${finalRiskLimits.regime.padEnd(34)}║`);
+    console.log(`║  Pos. Scale:   ${((finalRiskLimits.positionLimits.positionScaleFactor * 100).toFixed(0) + '%').padEnd(34)}║`);
+  }
   console.log(`╚══════════════════════════════════════════════════╝\n`);
 
   // Run final backtest with best strategy

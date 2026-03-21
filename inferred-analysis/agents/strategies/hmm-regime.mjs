@@ -541,6 +541,7 @@ export function fitHMM(prices, { nStates = 3, maxIter = 100, tol = 1e-4, verbose
   const stats = model.regimeStatistics(obs, states);
 
   return { model, observations: obs, dates, states, stats };
+  } catch (err) { console.error(`[fitHMM] Failed: ${err.message}`); return { model: null, observations: [], dates: [], states: [], stats: [] }; }
 }
 
 /**
@@ -570,6 +571,11 @@ export function getRegimeProbabilities(model, prices) {
  * @returns {Array<{date, regime, prevRegime, signal, confidence}>}
  */
 export function getRegimeSignals(model, prices) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[getRegimeSignals] Invalid price data: ${v.errors.join("; ")}`); return []; }
+  if (!model) { console.error("[getRegimeSignals] Model is null"); return []; }
+
   const logReturns = computeLogReturns(prices);
   const obs = logReturns.map(r => r.ret);
   const dates = logReturns.map(r => r.date);
@@ -617,6 +623,7 @@ export function getRegimeSignals(model, prices) {
   }
 
   return signals;
+  } catch (err) { console.error(`[getRegimeSignals] Failed: ${err.message}`); return []; }
 }
 
 // ─── Backtesting ─────────────────────────────────────────

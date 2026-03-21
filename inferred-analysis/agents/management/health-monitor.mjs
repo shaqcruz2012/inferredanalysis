@@ -35,6 +35,7 @@ import {
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import os from "os";
+import { safeReadJSON, safeWriteJSON, atomicAppendFile, atomicWriteFile } from "../shared/atomic-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "..");
