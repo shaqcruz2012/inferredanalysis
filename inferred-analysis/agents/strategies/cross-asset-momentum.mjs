@@ -212,14 +212,19 @@ const SECTOR_ETFS = {
  * Rotate into strongest sectors, weighted by momentum strength.
  */
 export function sectorRotation(priceArrays, options = {}) {
+  try {
+  const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[sectorRotation] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+
   const {
     lookback = 63,
     topSectors = 3,
     rebalanceDays = 21,
     momentumWeighted = true,
   } = options;
-
-  const symbols = Object.keys(priceArrays);
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
 
@@ -260,6 +265,7 @@ export function sectorRotation(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[sectorRotation] Failed: ${err.message}`); return []; }
 }
 
 // ─── Portfolio Backtest Engine ───────────────────────────

@@ -71,6 +71,12 @@ export function realizedDispersion(priceArrays, window = 21) {
  * Low correlation → buy correlation (sell dispersion)
  */
 export function dispersionSignals(priceArrays, options = {}) {
+  try {
+  const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[dispersionSignals] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
   const { window = 21, highCorrThreshold = 0.7, lowCorrThreshold = 0.3 } = options;
   const dispData = realizedDispersion(priceArrays, window);
   const symbols = Object.keys(priceArrays);
@@ -99,6 +105,7 @@ export function dispersionSignals(priceArrays, options = {}) {
       indexVol: d.indexVol,
     };
   });
+  } catch (err) { console.error(`[dispersionSignals] Failed: ${err.message}`); return []; }
 }
 
 /**

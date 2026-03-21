@@ -89,20 +89,15 @@ function emptyState() {
  * Load persisted breaker state from disk, or return empty state.
  */
 export function loadState() {
-  try {
-    if (existsSync(STATE_PATH)) {
-      const raw = readFileSync(STATE_PATH, "utf-8");
-      const state = JSON.parse(raw);
-      // Ensure structural integrity
-      if (!state.breakers) state.breakers = {};
-      if (!state.crashLog) state.crashLog = [];
-      if (!state.dailyLossTracker) {
-        state.dailyLossTracker = { date: null, cumulativeLoss: 0, capital: 0 };
-      }
-      return state;
+  const state = safeReadJSON(STATE_PATH, null);
+  if (state) {
+    // Ensure structural integrity
+    if (!state.breakers) state.breakers = {};
+    if (!state.crashLog) state.crashLog = [];
+    if (!state.dailyLossTracker) {
+      state.dailyLossTracker = { date: null, cumulativeLoss: 0, capital: 0 };
     }
-  } catch (err) {
-    console.error(`Warning: failed to load breaker state: ${err.message}`);
+    return state;
   }
   return emptyState();
 }
@@ -114,7 +109,7 @@ export function saveState(state) {
   state.lastUpdated = new Date().toISOString();
   try {
     mkdirSync(dirname(STATE_PATH), { recursive: true });
-    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+    safeWriteJSON(STATE_PATH, state);
   } catch (err) {
     console.error(`Warning: failed to save breaker state: ${err.message}`);
   }

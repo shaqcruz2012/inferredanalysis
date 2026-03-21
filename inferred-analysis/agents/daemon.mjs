@@ -227,17 +227,63 @@ async function main() {
   // Write PID
   writePid();
 
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
-    log("Received SIGTERM — shutting down");
+  // Graceful shutdown — save checkpoint before exiting
+  const gracefulShutdown = (signal) => {
+    log(`Received ${signal} — saving checkpoint and shutting down`);
+    try {
+      saveCheckpoint({
+        cycleCount,
+        lastAgent: null,
+        opts: { interval: opts.interval, iterations: opts.iterations },
+        runningAgents: getRunningAgentsSnapshot(),
+        shutdownReason: signal,
+      });
+    } catch (e) {
+      log(`Warning: checkpoint save failed on shutdown: ${e.message}`);
+    }
     cleanPid();
     process.exit(0);
-  });
-  process.on("SIGINT", () => {
-    log("Received SIGINT — shutting down");
-    cleanPid();
-    process.exit(0);
-  });
+  };
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+  // ─── Crash recovery: restore from checkpoint ───────────
+  let cycleCount = 0;
+  const checkpoint = loadCheckpoint();
+  if (checkpoint) {
+    log("═══════════════════════════════════════════════════");
+    log("RECOVERY: Found checkpoint from previous run");
+    log(`  Previous cycle: ${checkpoint.cycleCount ?? "?"}`);
+    log(`  Saved at: ${checkpoint.savedAt ?? "?"}`);
+    log(`  Shutdown reason: ${checkpoint.shutdownReason ?? "unknown"}`);
+
+    // Resume from where we left off
+    cycleCount = checkpoint.cycleCount ?? 0;
+    log(`  Resuming from cycle ${cycleCount + 1}`);
+
+    // Detect stale agents from previous run
+    const staleAgents = detectStaleAgents(300_000);
+    if (staleAgents.length > 0) {
+      log(`  Stale agents detected: ${staleAgents.length}`);
+      for (const stale of staleAgents) {
+        const staleMins = Math.round(stale.staleDurationMs / 60_000);
+        log(`    ${stale.agentName}: started ${staleMins} min ago, never completed`);
+        const failResult = recordFailure(stale.agentName);
+        if (failResult.quarantined) {
+          log(`    -> Quarantined after ${failResult.retryCount} failures`);
+        } else {
+          log(`    -> Failure ${failResult.retryCount}/${3} recorded, will retry`);
+        }
+        generateIncidentReport({
+          type: "recovery",
+          agent: stale.agentName,
+          reason: `Stale agent detected on startup (was running ${staleMins} min)`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+    log("═══════════════════════════════════════════════════");
+  }
 
   log("═══════════════════════════════════════════════════");
   log("Inferred Analysis Research Daemon started");
@@ -247,6 +293,9 @@ async function main() {
   log(`  Paperclip: ${opts.paperclipUrl}`);
   log(`  PID: ${process.pid}`);
   log(`  Mode: ${opts.once ? "single run" : "continuous"}`);
+  if (checkpoint) {
+    log(`  Recovered: yes (from cycle ${checkpoint.cycleCount ?? 0})`);
+  }
 
   // Report circuit breaker status at startup
   const breakerStatus = getBreakerSummary();
@@ -261,14 +310,29 @@ async function main() {
     log("  Circuit breakers: all clear");
   }
 
-  log("═══════════════════════════════════════════════════");
+  // Report self-healer status at startup
+  const sysReport = getSystemReport();
+  log(`  Self-healer: ${sysReport.status} | quarantined: ${sysReport.activeQuarantines.length} | incidents (24h): ${sysReport.recentIncidents} | strategies tracked: ${sysReport.strategiesTracked}`);
 
-  let cycleCount = 0;
+  log("═══════════════════════════════════════════════════");
 
   while (true) {
     cycleCount++;
     const cycleStart = Date.now();
     log(`\n─── Cycle ${cycleCount} ───`);
+
+    // ─── System pressure check ─────────────────────────────
+    const pressure = shouldScaleDown();
+    let effectiveIterations = opts.iterations;
+    if (pressure.underPressure) {
+      effectiveIterations = Math.max(1, Math.floor(opts.iterations / 2));
+      log(`PRESSURE: System under memory pressure (heap ${pressure.heapRatio}%) — reducing iterations to ${effectiveIterations}`);
+      generateIncidentReport({
+        type: "pressure",
+        reason: `Heap at ${pressure.heapRatio}%, reduced iterations from ${opts.iterations} to ${effectiveIterations}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Check Paperclip
     const paperclipUp = await checkPaperclip(opts.paperclipUrl);
@@ -284,7 +348,13 @@ async function main() {
       log(formatBreakerBlock("daemon cycle", portfolioCheck));
       log(`CIRCUIT BREAKER: Portfolio halted — skipping all agent cycles`);
       log(`Reason: ${portfolioCheck.reason}`);
-      // Still sleep and retry next cycle — breaker may clear
+      saveCheckpoint({
+        cycleCount,
+        lastAgent: null,
+        opts: { interval: opts.interval, iterations: opts.iterations },
+        runningAgents: getRunningAgentsSnapshot(),
+        shutdownReason: "portfolio_halted",
+      });
       if (opts.once) {
         log("Single-run mode — exiting (portfolio halted)");
         break;
@@ -300,6 +370,27 @@ async function main() {
     const agentIndex = (cycleCount - 1) % RESEARCH_AGENTS.length;
     const agent = RESEARCH_AGENTS[agentIndex];
 
+    // ─── Quarantine check ──────────────────────────────────
+    if (isQuarantined(agent)) {
+      log(`QUARANTINE: Agent ${agent} is quarantined — skipping`);
+      saveCheckpoint({
+        cycleCount,
+        lastAgent: agent,
+        opts: { interval: opts.interval, iterations: opts.iterations },
+        runningAgents: getRunningAgentsSnapshot(),
+        shutdownReason: null,
+      });
+      if (opts.once) {
+        log("Single-run mode — exiting (agent quarantined)");
+        break;
+      }
+      const elapsed = (Date.now() - cycleStart) / 1000;
+      const sleepTime = Math.max(10, opts.interval - elapsed);
+      log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle...`);
+      await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
+      continue;
+    }
+
     // Circuit breaker check — skip this agent if its breaker is tripped
     const agentBreaker = isTradingHalted(agent);
     if (agentBreaker.halted) {
@@ -310,8 +401,40 @@ async function main() {
       if (agentBreaker.positionScale < 1.0) {
         log(`Circuit breaker: Agent ${agent} in recovery mode (scale: ${(agentBreaker.positionScale * 100).toFixed(0)}%)`);
       }
-      runAgentCycle(agent, opts.iterations, opts.paperclipUrl);
+
+      // ─── Run agent with crash tracking ───────────────────
+      markAgentStarted(agent, Date.now());
+      const result = runAgentCycle(agent, effectiveIterations, opts.paperclipUrl);
+      markAgentCompleted(agent, result);
+
+      if (result.ok) {
+        clearFailures(agent);
+      } else {
+        const failResult = recordFailure(agent);
+        if (failResult.quarantined) {
+          log(`QUARANTINE: Agent ${agent} quarantined after ${failResult.retryCount} consecutive failures`);
+        } else {
+          log(`FAILURE: Agent ${agent} failure ${failResult.retryCount}/3 — will retry next rotation`);
+        }
+        generateIncidentReport({
+          type: "agent_crash",
+          agent,
+          reason: result.error?.slice(0, 300) ?? "unknown error",
+          retryCount: failResult.retryCount,
+          quarantined: failResult.quarantined,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
+
+    // ─── Save checkpoint after agent run ───────────────────
+    saveCheckpoint({
+      cycleCount,
+      lastAgent: agent,
+      opts: { interval: opts.interval, iterations: opts.iterations },
+      runningAgents: getRunningAgentsSnapshot(),
+      shutdownReason: null,
+    });
 
     // ─── Health evaluation ─────────────────────────────────
     try {
@@ -342,6 +465,16 @@ async function main() {
     // Send notification report every full rotation (after all 7 agents have run)
     if (cycleCount % RESEARCH_AGENTS.length === 0) {
       log("Full rotation complete — sending status report");
+
+      // Log self-healer summary at each full rotation
+      const rotationReport = getSystemReport();
+      log(`Self-healer: ${rotationReport.status} | quarantined: ${rotationReport.activeQuarantines.length} | strategies: ${rotationReport.strategiesTracked}`);
+      if (rotationReport.activeQuarantines.length > 0) {
+        for (const q of rotationReport.activeQuarantines) {
+          log(`  Quarantined: ${q.agent} until ${q.until} (${q.totalQuarantines} total quarantines)`);
+        }
+      }
+
       try {
         execSync(`node "${join(__dirname, "notify.mjs")}" --telegram`, {
           cwd: ROOT,
@@ -357,12 +490,20 @@ async function main() {
 
     if (opts.once) {
       log("Single-run mode — exiting");
+      saveCheckpoint({
+        cycleCount,
+        lastAgent: agent,
+        opts: { interval: opts.interval, iterations: opts.iterations },
+        runningAgents: getRunningAgentsSnapshot(),
+        shutdownReason: "single_run_complete",
+      });
       break;
     }
 
-    // Calculate sleep time
+    // Calculate sleep time (increase if under pressure)
     const elapsed = (Date.now() - cycleStart) / 1000;
-    const sleepTime = Math.max(10, opts.interval - elapsed);
+    const baseSleep = Math.max(10, opts.interval - elapsed);
+    const sleepTime = pressure.underPressure ? baseSleep * 1.5 : baseSleep;
     log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle...`);
 
     await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
