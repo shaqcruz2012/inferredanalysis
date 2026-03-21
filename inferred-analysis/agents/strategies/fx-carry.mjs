@@ -180,6 +180,7 @@ export function fxCarryStrategy(rateHistories, yieldDifferentials, options = {})
     });
   }
   return signals;
+  } catch (err) { console.error(`[fxCarryStrategy] Failed: ${err.message}`); return []; }
 }
 
 // ─── FX Momentum Strategy ───────────────────────────────
@@ -191,7 +192,12 @@ export function fxCarryStrategy(rateHistories, yieldDifferentials, options = {})
  * @returns {{date: string, allocation: Object<string, number>, momentum: Object<string, number>}[]}
  */
 export function fxMomentumStrategy(rateHistories, lookback = 63) {
+  try {
   const pairs = Object.keys(rateHistories);
+  for (const pair of pairs) {
+    const v = validatePriceData(rateHistories[pair]);
+    if (!v.valid) { console.error(`[fxMomentumStrategy] Invalid data for ${pair}: ${v.errors.join("; ")}`); return []; }
+  }
   const minLen = Math.min(...pairs.map(p => rateHistories[p].length));
   const signals = [];
 
