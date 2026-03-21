@@ -172,6 +172,72 @@ async function checkPaperclip(url) {
   }
 }
 
+// ─── Position Reconciliation ─────────────────────────────
+
+async function fetchBrokerPositions() {
+  const key = process.env.ALPACA_API_KEY;
+  const secret = process.env.ALPACA_SECRET_KEY;
+  if (!key || !secret) return null; // No credentials — skip
+
+  const base = process.env.ALPACA_PAPER !== "false"
+    ? "https://paper-api.alpaca.markets"
+    : "https://api.alpaca.markets";
+
+  const res = await fetch(`${base}/v2/positions`, {
+    headers: {
+      "APCA-API-KEY-ID": key,
+      "APCA-API-SECRET-KEY": secret,
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Alpaca GET /v2/positions → ${res.status}`);
+  }
+  return res.json();
+}
+
+async function runReconciliation() {
+  const brokerPositions = await fetchBrokerPositions();
+  if (brokerPositions === null) {
+    // No Alpaca credentials — reconciliation not possible
+    return;
+  }
+
+  const tracker = getTracker();
+  const trackerPositions = tracker.getPositions();
+
+  const result = reconcile(trackerPositions, brokerPositions);
+
+  if (result.clean) {
+    log(`Reconciliation: CLEAN — ${result.matched.length} positions match`);
+    return;
+  }
+
+  log(`Reconciliation: DRIFT detected — $${result.totalDrift.toFixed(2)} (${(result.driftPct * 100).toFixed(2)}%)`);
+  log(`  Matched: ${result.matched.length} | Mismatched: ${result.mismatched.length} | Tracker-only: ${result.trackerOnly.length} | Broker-only: ${result.brokerOnly.length}`);
+
+  // Auto-resolve using broker-wins (safest default)
+  const resolution = autoResolve(result, "broker-wins", tracker);
+  log(`  Resolved: ${resolution.actionCount} actions applied (strategy: broker-wins)`);
+
+  // Alert on significant drift (>5% of portfolio value)
+  if (result.driftPct > 0.05) {
+    log(`  *** SIGNIFICANT DRIFT ALERT: ${(result.driftPct * 100).toFixed(2)}% of portfolio ***`);
+    const report = getReconciliationReport();
+    log(report);
+
+    // Attempt Telegram notification for significant drift
+    try {
+      const notifyFn = createNotifyFn(
+        process.env.TELEGRAM_BOT_TOKEN || "",
+        process.env.TELEGRAM_CHAT_ID || "",
+      );
+      await notifyFn(`POSITION DRIFT ALERT: $${result.totalDrift.toFixed(2)} (${(result.driftPct * 100).toFixed(2)}% of portfolio). Auto-resolved with broker-wins strategy.`);
+    } catch { /* best effort */ }
+  }
+}
+
 // ─── Main Daemon Loop ───────────────────────────────────
 
 async function main() {
