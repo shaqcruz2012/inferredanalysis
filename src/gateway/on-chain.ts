@@ -87,44 +87,61 @@ function getRpcUrl(): string {
   return process.env.BASE_RPC_URL || "https://mainnet.base.org";
 }
 
+/** Check if an RPC error is transient and worth retrying */
+function isTransientRpcError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|timeout|502|503|504|rate.limit/i.test(msg);
+}
+
+const RPC_RETRY_DELAYS = [2_000, 4_000, 8_000] as const;
+
 /**
  * Execute TransferWithAuthorization on-chain.
  * Fire-and-forget: logs result to nonce table.
+ * Retries transient RPC failures with exponential backoff.
  */
 export async function executeTransferOnChain(
   account: PrivateKeyAccount,
   db: Database,
   params: AuthorizationParams & { tier: string; amountCents: number },
 ): Promise<void> {
-  try {
-    const calldata = buildTransferWithAuthTx(params);
+  const calldata = buildTransferWithAuthTx(params);
 
-    const client = createWalletClient({
-      account,
-      chain: base,
-      transport: http(getRpcUrl(), { timeout: 30_000 }),
-    });
+  const client = createWalletClient({
+    account,
+    chain: base,
+    transport: http(getRpcUrl(), { timeout: 30_000 }),
+  });
 
-    const txHash = await client.sendTransaction({
-      to: USDC_ADDRESS,
-      data: calldata,
-    });
+  for (let attempt = 0; attempt <= RPC_RETRY_DELAYS.length; attempt++) {
+    try {
+      const txHash = await client.sendTransaction({
+        to: USDC_ADDRESS,
+        data: calldata,
+      });
 
-    // Mark nonce as executed
-    markNonceExecuted(db, params.nonce, txHash);
+      // Mark nonce as executed
+      markNonceExecuted(db, params.nonce, txHash);
 
-    // Log revenue
-    logRevenue(db, {
-      source: `gateway:${params.tier}`,
-      amountCents: params.amountCents,
-      description: `x402 payment for ${params.tier}`,
-      metadata: {
-        fromAddr: params.from,
-        txHash,
-        nonce: params.nonce,
-      },
-    });
-  } catch (err: any) {
-    markNonceFailed(db, params.nonce, err?.message || String(err));
+      // Log revenue
+      logRevenue(db, {
+        source: `gateway:${params.tier}`,
+        amountCents: params.amountCents,
+        description: `x402 payment for ${params.tier}`,
+        metadata: {
+          fromAddr: params.from,
+          txHash,
+          nonce: params.nonce,
+        },
+      });
+      return;
+    } catch (err: any) {
+      if (attempt < RPC_RETRY_DELAYS.length && isTransientRpcError(err)) {
+        await new Promise((r) => setTimeout(r, RPC_RETRY_DELAYS[attempt]));
+        continue;
+      }
+      markNonceFailed(db, params.nonce, err?.message || String(err));
+      return;
+    }
   }
 }

@@ -36,17 +36,31 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = "";
     let bytes = 0;
+    let settled = false;
+
+    // Timeout to prevent slowloris / stalled request bodies
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        req.destroy();
+        reject(new Error("Request body read timeout"));
+      }
+    }, 30_000);
+
     req.on("data", (chunk: Buffer) => {
+      if (settled) return;
       bytes += chunk.length;
       if (bytes > MAX_BODY_BYTES) {
+        settled = true;
+        clearTimeout(timeout);
         req.destroy();
         reject(new Error("Request body too large"));
         return;
       }
       body += chunk;
     });
-    req.on("end", () => resolve(body));
-    req.on("error", reject);
+    req.on("end", () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(body); } });
+    req.on("error", (err) => { if (!settled) { settled = true; clearTimeout(timeout); reject(err); } });
   });
 }
 

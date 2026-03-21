@@ -464,7 +464,14 @@ export class UnifiedInferenceClient {
     };
     const toolCallsByIndex = new Map<number, any>();
 
+    // Overall stream timeout to prevent hanging if the stream stalls
+    const STREAM_TIMEOUT_MS = 120_000;
+    const streamDeadline = Date.now() + STREAM_TIMEOUT_MS;
+
     for await (const chunk of stream) {
+      if (Date.now() > streamDeadline) {
+        throw new Error("Stream consumption timeout: response stream exceeded 120s");
+      }
       const choice = chunk?.choices?.[0];
       const delta = choice?.delta;
 

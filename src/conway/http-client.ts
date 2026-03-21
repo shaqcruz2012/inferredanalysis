@@ -43,8 +43,13 @@ export class ResilientHttpClient {
     const opts = options ?? {};
     const timeout = opts.timeout ?? this.config.baseTimeout;
     const maxRetries = opts.retries ?? this.config.maxRetries;
+    // Total deadline across all retries to prevent unbounded retry accumulation
+    const totalDeadline = Date.now() + timeout * (maxRetries + 1) + this.config.backoffMax * maxRetries;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (Date.now() > totalDeadline) {
+        throw new Error(`Request to ${url} exceeded total retry deadline`);
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
 

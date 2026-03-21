@@ -209,24 +209,43 @@ async function callProviderDirect(
 
   const startMs = Date.now();
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(computeTimeoutMs(maxTokens)),
-  });
+  // Use a single AbortController for the entire lifecycle (fetch + body read)
+  const controller = new AbortController();
+  const timeoutMs = computeTimeoutMs(maxTokens);
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutHandle);
+    throw err;
+  }
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
+    clearTimeout(timeoutHandle);
     throw new Error(
       `Inference error (${provider.id}): ${response.status}: ${errorText}`,
     );
   }
 
-  const json = await response.json() as OpenAICompletionResponse;
+  let json: OpenAICompletionResponse;
+  try {
+    json = await response.json() as OpenAICompletionResponse;
+  } catch (err) {
+    clearTimeout(timeoutHandle);
+    throw new Error(`Inference error (${provider.id}): failed to parse response body`);
+  }
+  clearTimeout(timeoutHandle);
   const latencyMs = Date.now() - startMs;
 
   const choice = json.choices?.[0];
