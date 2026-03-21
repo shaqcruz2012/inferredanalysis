@@ -13,6 +13,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync, appendFileSync } from "fs";
+import { appendTSV } from "../shared/atomic-writer.mjs";
 import { join, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { aggregateSignals, computeWeights, METHODS } from "./signal-aggregator.mjs";
@@ -150,7 +151,7 @@ function logResult(symbol, method, metrics) {
     metrics.final_capital.toFixed(2),
   ].join("\t");
 
-  appendFileSync(RESULTS_TSV, line + "\n");
+  appendTSV(RESULTS_TSV, line);
   console.log(`\n# Result appended to results.tsv`);
 }
 

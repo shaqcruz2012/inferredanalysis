@@ -469,6 +469,12 @@ function main() {
 
   const dailyBars = loadPrices(OPTS.symbol, OPTS.startDate, OPTS.endDate);
 
+  const v = validatePriceData(dailyBars);
+  if (!v.valid) {
+    console.error(`ERROR: Invalid price data: ${v.errors.join("; ")}`);
+    process.exit(1);
+  }
+
   if (dailyBars.length < 100) {
     console.error("ERROR: Need at least 100 daily bars for multi-timeframe analysis.");
     process.exit(1);

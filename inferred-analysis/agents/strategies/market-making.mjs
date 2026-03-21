@@ -149,6 +149,10 @@ export class MarketMaker {
  * Run a market making simulation.
  */
 export function simulateMarketMaking(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[simulateMarketMaking] Invalid price data: ${v.errors.join("; ")}`); return { mm: new MarketMaker(options), equityCurve: [] }; }
+
   const { fillProbability = 0.3, avgTradeSize = 50 } = options;
   const mm = new MarketMaker(options);
   const equityCurve = [];
@@ -181,6 +185,7 @@ export function simulateMarketMaking(prices, options = {}) {
   }
 
   return { mm, equityCurve };
+  } catch (err) { console.error(`[simulateMarketMaking] Failed: ${err.message}`); return { mm: new MarketMaker(options), equityCurve: [] }; }
 }
 
 // ─── CLI Demo ───────────────────────────────────────────

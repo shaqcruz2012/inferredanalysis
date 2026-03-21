@@ -86,14 +86,19 @@ export function conditionalMeans(returns, halfLife = 63) {
  * Dynamic mean-variance timing: rebalance based on conditional estimates.
  */
 export function meanVarianceTiming(priceArrays, options = {}) {
+  try {
+  const symbols = Object.keys(priceArrays);
+  for (const sym of symbols) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[meanVarianceTiming] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+
   const {
     rebalanceDays = 21,
     lookback = 126,
     riskAversion = 2.5,
     maxWeight = 0.50,
   } = options;
-
-  const symbols = Object.keys(priceArrays);
   const n = symbols.length;
   const minLen = Math.min(...symbols.map(s => priceArrays[s].length));
   const signals = [];
@@ -143,6 +148,7 @@ export function meanVarianceTiming(priceArrays, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[meanVarianceTiming] Failed: ${err.message}`); return []; }
 }
 
 // ─── Backtest ───────────────────────────────────────────

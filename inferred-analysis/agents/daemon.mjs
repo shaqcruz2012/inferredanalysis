@@ -24,6 +24,7 @@ import { execSync, spawn } from "child_process";
 import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { atomicAppendFile, atomicWriteFile } from "./shared/atomic-writer.mjs";
 import { isTradingHalted, isPortfolioHalted, getBreakerSummary, formatBreakerBlock } from "./risk/breaker-guard.mjs";
 import {
   evaluateAndAct,

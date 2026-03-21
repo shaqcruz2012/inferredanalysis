@@ -40,6 +40,21 @@ const SAFETY = {
   drawdownKillPct: parseFloat(process.env.DRAWDOWN_KILL_PCT) || 0.05, // 5%
 };
 
+// ─── Smart Order Router (opt-in via --smart-router) ───────
+
+// Default venue definitions for order routing analysis.
+// Even in paper trading, routing through the SOR provides:
+//   1. Algorithm selection logging for future extension
+//   2. Order splitting recommendations for large positions
+//   3. Venue cost analysis for execution quality benchmarking
+const DEFAULT_VENUES = [
+  { name: "NYSE",      fee: 0.0003,  rebate: 0.0002,  latency: 2,   fillRate: 0.95 },
+  { name: "NASDAQ",    fee: 0.0003,  rebate: 0.00025, latency: 1.5, fillRate: 0.93 },
+  { name: "BATS",      fee: 0.0002,  rebate: 0.00015, latency: 1,   fillRate: 0.88 },
+  { name: "IEX",       fee: 0.0001,  rebate: 0.0,     latency: 3,   fillRate: 0.80 },
+  { name: "DarkPool1", fee: 0.0001,  rebate: 0.0001,  latency: 5,   fillRate: 0.60 },
+];
+
 // ─── Alpaca REST Client ───────────────────────────────────
 
 const ALPACA_BASE = process.env.ALPACA_PAPER !== "false"
@@ -361,6 +376,7 @@ function parseArgs() {
     flatten: false,
     symbol: null,
     dryRun: false,
+    useSmartRouter: false,
   };
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -370,6 +386,7 @@ function parseArgs() {
       case "--flatten": opts.flatten = true; break;
       case "--symbol": opts.symbol = args[++i]; break;
       case "--dry-run": opts.dryRun = true; break;
+      case "--smart-router": opts.useSmartRouter = true; break;
     }
   }
   return opts;
