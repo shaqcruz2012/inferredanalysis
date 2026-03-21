@@ -14,6 +14,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { clampSharpe } from "../shared/constraints.mjs";
 
 // ─── Walk-Forward Cross-Validation ──────────────────────────
 
@@ -305,11 +306,13 @@ export class CrossValidator {
  * @returns {{deflatedSharpe: number, pValue: number, significant: boolean}}
  */
 export function deflatedSharpe(sharpe, nTrials, skew, kurtosis, T) {
+  // Clamp input Sharpe to reject unrealistic values before correction
+  const clampedSharpe = clampSharpe(sharpe);
   const gamma = 0.5772156649;
-  const logN = Math.log(nTrials);
+  const logN = Math.log(Math.max(1, nTrials));
   const eMSR = Math.sqrt(2 * logN) - (Math.log(Math.PI) + gamma) / (2 * Math.sqrt(2 * logN));
-  const sharpeVar = (1 + 0.5 * sharpe ** 2 - skew * sharpe + ((kurtosis - 3) / 4) * sharpe ** 2) / T;
-  const testStat = (sharpe - eMSR) / Math.sqrt(sharpeVar);
+  const sharpeVar = (1 + 0.5 * clampedSharpe ** 2 - skew * clampedSharpe + ((kurtosis - 3) / 4) * clampedSharpe ** 2) / Math.max(1, T);
+  const testStat = sharpeVar > 0 ? (clampedSharpe - eMSR) / Math.sqrt(sharpeVar) : 0;
   const pValue = 1 - normalCDF(testStat);
   return { deflatedSharpe: +testStat.toFixed(4), pValue: +pValue.toFixed(4), significant: pValue < 0.05 };
 }

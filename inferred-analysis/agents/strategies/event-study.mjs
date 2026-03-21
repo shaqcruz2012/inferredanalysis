@@ -207,6 +207,10 @@ export function detectGapEvents(prices, { threshold = 0.02 } = {}) {
  * Filter by `types` array to select specific event types.
  */
 export function identifyEvents(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[identifyEvents] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const {
     types = null, // null = all types
     rsi = {},
@@ -239,6 +243,7 @@ export function identifyEvents(prices, options = {}) {
   // Sort by date
   allEvents.sort((a, b) => a.date.localeCompare(b.date));
   return allEvents;
+  } catch (err) { console.error(`[identifyEvents] Failed: ${err.message}`); return []; }
 }
 
 // ─── Market Model & Abnormal Returns ─────────────────────

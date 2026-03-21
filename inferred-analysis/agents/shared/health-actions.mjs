@@ -18,6 +18,7 @@ import { execSync } from "child_process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import os from "os";
+import { safeReadJSON, safeWriteJSON, atomicAppendFile } from "./atomic-writer.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "..");
@@ -109,7 +110,7 @@ function logAction(msg) {
   const line = `[${ts}] [health-actions] ${msg}`;
   try {
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
-    appendFileSync(HEALTH_ACTIONS_LOG, line + "\n");
+    atomicAppendFile(HEALTH_ACTIONS_LOG, line);
   } catch { /* best effort */ }
   return line;
 }

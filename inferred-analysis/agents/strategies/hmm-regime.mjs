@@ -526,6 +526,10 @@ export class HiddenMarkovModel {
  * @returns {{ model, observations, dates, states, stats }}
  */
 export function fitHMM(prices, { nStates = 3, maxIter = 100, tol = 1e-4, verbose = false } = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[fitHMM] Invalid price data: ${v.errors.join("; ")}`); return { model: null, observations: [], dates: [], states: [], stats: [] }; }
+
   const logReturns = computeLogReturns(prices);
   const obs = logReturns.map(r => r.ret);
   const dates = logReturns.map(r => r.date);

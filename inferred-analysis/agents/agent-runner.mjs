@@ -614,6 +614,14 @@ async function main() {
     const sharpe = result.metrics.sharpe ?? -Infinity;
     const totalReturn = result.metrics.total_return ?? 0;
 
+    // Portfolio risk score for experiment context
+    let riskScore = 0;
+    try { riskScore = getPortfolioRiskScore(); } catch { /* unavailable */ }
+    if (riskScore > 0) {
+      const riskPenalty = riskScore > 60 ? (1 - (riskScore - 60) / 200) : 1.0;
+      console.log(`  [risk] Portfolio risk score: ${riskScore}/100 | Risk-adj Sharpe: ${(sharpe * riskPenalty).toFixed(4)}`);
+    }
+
     if (sharpe > bestSharpe) {
       console.log(`  KEEP — Sharpe: ${sharpe.toFixed(4)} (was ${bestSharpe.toFixed(4)}) | Return: ${(totalReturn * 100).toFixed(2)}%`);
       bestSharpe = sharpe;
@@ -631,6 +639,7 @@ async function main() {
     await reportToP(opts.paperclipUrl, companyId, paperclipAgent?.id, {
       experiment: `${i}/${opts.iterations}`, mutation: mutation.name,
       status: sharpe > bestSharpe ? "keep" : "discard", metrics: result.metrics,
+      riskScore,
     });
   }
 

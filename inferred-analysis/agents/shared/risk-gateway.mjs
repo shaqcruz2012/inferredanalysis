@@ -525,6 +525,33 @@ export function assessTradeRisk(trade, portfolioState) {
     reasons.push(`Drawdown ${(drawdown * 100).toFixed(1)}% in reduction zone — scale ${(clampedScale * 100).toFixed(0)}%`);
   }
 
+  // ── Check 10: Tail hedge size reduction (opt-in) ───────
+  if (RISK_CONFIG.enableTailHedger && state.tailHedgeRecommendation?.triggered) {
+    const th = state.tailHedgeRecommendation;
+    checks.tailHedge = th;
+    // When tail hedge is triggered, scale position size down proportional to
+    // the recommended hedge ratio — the idea is that if you'd hedge X% of
+    // portfolio, you should also reduce new entries by that amount.
+    const tailScale = Math.max(0.20, 1.0 - (th.hedgeRatio || 0));
+    adjustedSize = Math.max(1, Math.floor(adjustedSize * tailScale));
+    reasons.push(`Tail hedge triggered (DD ${(th.drawdown * 100).toFixed(1)}%, regime=${th.regime || "?"}) — size reduced to ${(tailScale * 100).toFixed(0)}%`);
+  }
+
+  // ── Check 11: Bayesian confidence-weighted sizing (opt-in)
+  if (RISK_CONFIG.enableBayesianRisk && state.bayesianRiskAssessment && !state.bayesianRiskAssessment.error) {
+    const ba = state.bayesianRiskAssessment;
+    checks.bayesianRisk = {
+      dominantRegime: ba.dominantRegime,
+      scaleFactor: ba.scaleFactor,
+      regimeProbabilities: ba.regimeProbabilities,
+    };
+
+    if (ba.scaleFactor < 1.0) {
+      adjustedSize = Math.max(1, Math.floor(adjustedSize * ba.scaleFactor));
+      reasons.push(`Bayesian risk (regime=${ba.dominantRegime}, P(crisis)=${((ba.regimeProbabilities.crisis || 0) * 100).toFixed(0)}%) — size scaled to ${(ba.scaleFactor * 100).toFixed(0)}%`);
+    }
+  }
+
   // ── Final validation ───────────────────────────────────
   adjustedSize = Math.max(0, adjustedSize);
   const allowed = adjustedSize > 0;
