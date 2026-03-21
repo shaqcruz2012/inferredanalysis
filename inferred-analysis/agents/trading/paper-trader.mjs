@@ -810,6 +810,24 @@ async function runPaperTrading(opts) {
         console.log(`  Order submitted: ${order.id}`);
         console.log(`  Status: ${order.status}`);
 
+        // Update portfolio tracker on fill
+        if (order.status === "accepted" || order.status === "new" || order.status === "filled") {
+          const fillResult = tracker.addTrade({
+            symbol,
+            side,
+            qty,
+            price: estimatedPrice,
+            agent: agentRole,
+            orderId: order.id,
+          });
+          console.log(`  Tracker: ${side} ${qty} ${symbol}, portfolio equity: $${fillResult.portfolio.equity}, day P&L: $${fillResult.portfolio.dayPnl}`);
+          invalidateRiskCache();
+
+          // Emit exposure change for downstream listeners
+          const exposure = tracker.getExposure({ [symbol]: estimatedPrice });
+          tracker.emit("exposure:change", exposure);
+        }
+
         logTrade({
           agent: agentRole,
           symbol,
@@ -845,6 +863,16 @@ async function runPaperTrading(opts) {
   } else {
     console.log("\nSignal is FLAT. No new position opened.");
   }
+
+  // 6b. Portfolio tracker summary
+  console.log("\n─── Portfolio Tracker State ───");
+  const trackerSummary = tracker.getPortfolioSummary({ [symbol]: latestSignal.price });
+  console.log(`  NAV:              $${trackerSummary.nav.toLocaleString()}`);
+  console.log(`  Cash:             $${trackerSummary.cash.toLocaleString()}`);
+  console.log(`  Daily P&L:        $${trackerSummary.dailyPnl}`);
+  console.log(`  Drawdown:         ${(trackerSummary.drawdownPct * 100).toFixed(2)}%`);
+  console.log(`  Active positions: ${trackerSummary.activePositions}`);
+  console.log(`  Exposure:         long=${(trackerSummary.exposure.longPct * 100).toFixed(1)}% short=${(trackerSummary.exposure.shortPct * 100).toFixed(1)}% net=${(trackerSummary.exposure.netPct * 100).toFixed(1)}%`);
 
   // 7. Backtest comparison
   console.log("\n─── Backtest vs Paper Comparison ───");
