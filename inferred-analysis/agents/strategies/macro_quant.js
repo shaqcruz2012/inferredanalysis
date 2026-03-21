@@ -47,6 +47,9 @@ const CONFIG = {
  * THIS IS THE FUNCTION AGENTS MODIFY TO TEST DIFFERENT STRATEGIES.
  */
 function generateSignals(prices) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error("[generateSignals] Invalid price data: " + v.errors.join("; ")); return []; }
   const signals = [];
   const lookback = 41;
   const threshold = 0.0271;
@@ -61,10 +64,12 @@ function generateSignals(prices) {
     signals.push({ date: prices[i].date, signal, price: prices[i].close });
   }
   return signals;
+  } catch (err) { console.error(`[generateSignals] Failed: ${err.message}`); return []; }
 }
 
 // ─── Backtest Engine (shared module) ─────────────────────
 
+import { validatePriceData } from "../shared/data-validation.mjs";
 import {
   runBacktest as _runBacktest,
   computeMetrics,
