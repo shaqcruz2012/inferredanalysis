@@ -48,6 +48,15 @@ import {
 } from "./shared/self-healer.mjs";
 import { reconcile, autoResolve, getReconciliationReport, isDriftSignificant } from "./trading/reconciler.mjs";
 import { getTracker } from "./shared/portfolio-tracker.mjs";
+import {
+  getGuardrailStatus,
+  checkAutonomy,
+  isBudgetExhausted,
+  isBudgetWarning,
+  logAuditEntry,
+  emergencyShutdown,
+  GUARDRAIL_LIMITS,
+} from "./shared/trading-guardrails.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -383,6 +392,17 @@ async function main() {
   const sysReport = getSystemReport();
   log(`  Self-healer: ${sysReport.status} | quarantined: ${sysReport.activeQuarantines.length} | incidents (24h): ${sysReport.recentIncidents} | strategies tracked: ${sysReport.strategiesTracked}`);
 
+  // Report trading guardrail status at startup
+  const guardrailStatus = getGuardrailStatus();
+  if (guardrailStatus.killSwitch.engaged) {
+    log(`  GUARDRAILS: *** KILL SWITCH ENGAGED *** — ${guardrailStatus.killSwitch.reason}`);
+  } else {
+    log(`  Guardrails: active | inference budget: $${guardrailStatus.inferenceBudget.remaining.toFixed(2)} remaining | audit trail: ${guardrailStatus.auditTrailSize} entries`);
+    if (guardrailStatus.reducedRiskMode.active) {
+      log(`  Guardrails: REDUCED RISK MODE active since ${guardrailStatus.reducedRiskMode.timestamp}`);
+    }
+  }
+
   log("═══════════════════════════════════════════════════");
 
   while (true) {
@@ -409,6 +429,54 @@ async function main() {
       log("Paperclip: connected");
     } else {
       log("Paperclip: not reachable (running standalone)");
+    }
+
+    // ─── Guardrail pre-flight check ───────────────────────
+    const guardrailState = getGuardrailStatus();
+    if (guardrailState.killSwitch.engaged) {
+      log(`GUARDRAIL KILL SWITCH: ${guardrailState.killSwitch.reason}`);
+      log(`Kill switch engaged at ${guardrailState.killSwitch.timestamp} — all trading halted`);
+      if (opts.once) break;
+      const elapsed = (Date.now() - cycleStart) / 1000;
+      const sleepTime = Math.max(10, opts.interval - elapsed);
+      log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle (kill switch active)...`);
+      await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
+      continue;
+    }
+
+    // Check inference budget before running agent cycle
+    if (isBudgetExhausted()) {
+      log(`GUARDRAIL: Inference budget exhausted ($${guardrailState.inferenceBudget.spent.toFixed(2)} / $${GUARDRAIL_LIMITS.MAX_DAILY_INFERENCE_COST.toFixed(2)}) — skipping agent cycle`);
+      logAuditEntry({
+        action: "daemon_cycle_skipped",
+        tier: "SYSTEM",
+        approved_by: "auto",
+        reasoning: "Inference budget exhausted — skipping agent cycle",
+      });
+      if (opts.once) break;
+      const elapsed = (Date.now() - cycleStart) / 1000;
+      const sleepTime = Math.max(10, opts.interval - elapsed);
+      log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle (budget exhausted)...`);
+      await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
+      continue;
+    }
+
+    // Reduce iterations when inference budget is 80% consumed
+    if (isBudgetWarning()) {
+      const reducedIterations = Math.max(1, Math.floor(effectiveIterations / 2));
+      log(`GUARDRAIL: Inference budget at ${((guardrailState.inferenceBudget.spent / GUARDRAIL_LIMITS.MAX_DAILY_INFERENCE_COST) * 100).toFixed(0)}% — reducing iterations from ${effectiveIterations} to ${reducedIterations}`);
+      effectiveIterations = reducedIterations;
+    }
+
+    // Autonomy check for the daemon research cycle
+    const daemonAutonomy = checkAutonomy("research");
+    if (!daemonAutonomy.allowed) {
+      log(`GUARDRAIL: Research cycle blocked — ${daemonAutonomy.reason}`);
+      if (opts.once) break;
+      const elapsed = (Date.now() - cycleStart) / 1000;
+      const sleepTime = Math.max(10, opts.interval - elapsed);
+      await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
+      continue;
     }
 
     // Circuit breaker check — halt entire daemon cycle if portfolio breaker is active

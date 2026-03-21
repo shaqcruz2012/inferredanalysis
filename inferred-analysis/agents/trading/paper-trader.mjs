@@ -25,6 +25,15 @@ import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
 import { getTracker } from "../shared/portfolio-tracker.mjs";
 import { SmartOrderRouter } from "./smart-order-router.mjs";
+import {
+  preTradeCheck,
+  checkAutonomy,
+  enforceLimit,
+  killSwitch,
+  logAuditEntry,
+  getGuardrailStatus,
+  GUARDRAIL_LIMITS,
+} from "../shared/trading-guardrails.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -668,6 +677,60 @@ async function runPaperTrading(opts) {
         equity_after: equity,
         daily_pnl: 0,
         signal_source: `${agentRole}:risk_score=${riskAssessment.riskScore}`,
+      });
+      return;
+    }
+  }
+
+  // 5c. Trading guardrails — composite pre-trade check
+  if (latestSignal.signal !== 0) {
+    const positionFractionGuardrail = config.positionSize || 0.10;
+    const guardrailQty = Math.floor(Math.min(equity * positionFractionGuardrail, SAFETY.maxPositionSize) / latestSignal.price);
+
+    // Compute gross exposure from current positions
+    const grossExposure = positions.reduce((sum, p) => sum + Math.abs(parseFloat(p.qty) * parseFloat(p.current_price)), 0);
+
+    const guardrailResult = preTradeCheck(
+      {
+        action: "paper_trade",
+        symbol,
+        side: latestSignal.signal === 1 ? "buy" : "sell",
+        qty: guardrailQty,
+        price: latestSignal.price,
+        agent: agentRole,
+      },
+      {
+        equity,
+        dailyPnl: equity - parseFloat(account.last_equity || equity),
+        peakEquity: Math.max(equity, parseFloat(account.last_equity || equity)),
+        grossExposure,
+        correlatedExposure: grossExposure * 0.5, // conservative estimate
+      }
+    );
+
+    console.log(`\n  Trading Guardrails:`);
+    console.log(`    Allowed:  ${guardrailResult.allowed}`);
+    console.log(`    Checks:   ${guardrailResult.checks.length} run, ${guardrailResult.checks.filter(c => c.passed).length} passed`);
+    for (const check of guardrailResult.checks) {
+      const icon = check.passed ? "PASS" : "FAIL";
+      console.log(`    [${icon}] ${check.name}: ${check.reason}`);
+    }
+
+    if (!guardrailResult.allowed) {
+      console.log(`\n  GUARDRAIL BLOCK: ${guardrailResult.reason}`);
+      console.log("  Trade rejected by trading guardrails. No order placed.");
+      logTrade({
+        agent: agentRole,
+        symbol,
+        side: latestSignal.signal === 1 ? "buy" : "sell",
+        qty: guardrailQty,
+        price: latestSignal.price,
+        order_id: "guardrail_blocked",
+        status: `blocked: ${guardrailResult.reason.slice(0, 80)}`,
+        equity_before: equity,
+        equity_after: equity,
+        daily_pnl: 0,
+        signal_source: `${agentRole}:guardrail`,
       });
       return;
     }

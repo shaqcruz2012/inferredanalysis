@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-03-21T03:24:12.631Z",
+    "action": "paper_trade",
+    "tier": "SUPERVISED",
+    "approved_by": "auto",
+    "reasoning": "Trade allowed: buy 10 SPY",
+    "details": {
+      "symbol": "SPY",
+      "side": "buy",
+      "qty": 10,
+      "price": 450,
+      "agent": "test",
+      "checksRun": 7,
+      "checksPassed": 7
+    }
+  },
+  {
+    "timestamp": "2026-03-21T03:24:32.444Z",
+    "action": "REDUCED_RISK_MODE_ACTIVATED",
+    "tier": "SYSTEM",
+    "approved_by": "system",
+    "reasoning": "All position limits halved, all cooldowns doubled",
+    "details": {
+      "effectiveLimits": {
+        "MAX_POSITION_SIZE_PCT": 0.05,
+        "MAX_DAILY_LOSS_PCT": 0.015,
+        "MAX_PORTFOLIO_DRAWDOWN_PCT": 0.075,
+        "MAX_LEVERAGE": 1,
+        "MAX_CORRELATED_EXPOSURE_PCT": 0.15
+      }
+    }
+  }
+]
