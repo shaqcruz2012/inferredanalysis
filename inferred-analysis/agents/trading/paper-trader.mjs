@@ -735,7 +735,52 @@ async function runPaperTrading(opts) {
       }
     }
 
-    console.log(`\nPlacing order: ${side.toUpperCase()} ${qty} ${symbol} (market, ~$${(estimatedPrice * qty).toFixed(2)})...`);
+    // ── Smart Order Router analysis (opt-in via --smart-router) ──
+    // Routes the order through the SOR for venue selection and algorithm
+    // recommendation. In paper trading, Alpaca handles actual execution,
+    // but SOR analysis is logged for future live deployment.
+    let routingInfo = null;
+    if (opts.useSmartRouter) {
+      try {
+        const router = new SmartOrderRouter(DEFAULT_VENUES);
+        const orderSpec = {
+          symbol,
+          side,
+          qty,
+          price: estimatedPrice,
+          adv: 5_000_000,       // conservative ADV estimate
+          urgency: 0.5,         // default moderate urgency
+          volatility: 0.018,    // typical daily vol
+        };
+
+        const routing = router.routeOrder(orderSpec);
+        const algo = router.selectAlgorithm(orderSpec);
+
+        routingInfo = { routing, algo };
+
+        console.log(`\n  Smart Order Router:`);
+        console.log(`    Recommended venue: ${routing.recommendation}`);
+        console.log(`    Est. cost: ${routing.costs[0]?.costBps ?? "?"} bps ($${routing.costs[0]?.totalCost?.toFixed(2) ?? "?"})`);
+        console.log(`    Savings vs worst: $${routing.savings}`);
+        console.log(`    Algorithm: ${algo.algorithm} — ${algo.reason}`);
+
+        // For large orders, show split recommendation
+        if (qty >= 1000) {
+          const split = router.splitOrder(orderSpec, 0.05);
+          console.log(`    Order split: ${split.splits.length} venue(s), ${split.totalIntervals} interval(s)`);
+          for (const s of split.splits) {
+            console.log(`      ${s.venue.padEnd(10)} ${s.qty} shares (${s.pct}%) est ${s.estimatedCostBps} bps`);
+          }
+        }
+      } catch (routerErr) {
+        console.log(`\n  Smart Order Router error (non-fatal): ${routerErr.message}`);
+      }
+    }
+
+    const routerLabel = routingInfo
+      ? `${routingInfo.algo.algorithm}@${routingInfo.routing.recommendation}`
+      : "market";
+    console.log(`\nPlacing order: ${side.toUpperCase()} ${qty} ${symbol} (${routerLabel}, ~$${(estimatedPrice * qty).toFixed(2)})...`);
     if (opts.dryRun) {
       console.log("  [DRY RUN] Would place order");
     } else {
@@ -755,7 +800,9 @@ async function runPaperTrading(opts) {
           equity_before: equityBefore,
           equity_after: equityBefore, // actual settles later
           daily_pnl: 0,
-          signal_source: agentRole,
+          signal_source: routingInfo
+            ? `${agentRole}:sor=${routingInfo.routing.recommendation}:algo=${routingInfo.algo.algorithm}`
+            : agentRole,
         });
       } catch (err) {
         console.error(`  Order failed: ${err.message}`);

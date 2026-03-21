@@ -199,8 +199,8 @@ function readDiskCache(symbol) {
 
 function writeDiskCache(symbol, prices) {
   mkdirSync(CACHE_DIR, { recursive: true });
-  const path = getCachePath(symbol);
-  writeFileSync(path, JSON.stringify({
+  const cachePath = getCachePath(symbol);
+  safeWriteJSON(cachePath, {
     symbol: symbol.toUpperCase(),
     fetchedAt: Date.now(),
     fetchedAtISO: new Date().toISOString(),
@@ -208,7 +208,7 @@ function writeDiskCache(symbol, prices) {
     startDate: prices[0]?.date,
     endDate: prices[prices.length - 1]?.date,
     prices,
-  }, null, 2));
+  });
 }
 
 function listCached() {

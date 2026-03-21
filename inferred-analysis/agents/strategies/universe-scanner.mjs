@@ -21,6 +21,12 @@ import { validatePriceData, safeDiv, safeMean, safeStd } from "../shared/data-va
  * Scan for momentum across assets.
  */
 export function momentumScan(priceArrays, lookbacks = [21, 63, 126, 252]) {
+  try {
+  for (const sym of Object.keys(priceArrays)) {
+    const v = validatePriceData(priceArrays[sym]);
+    if (!v.valid) { console.error(`[momentumScan] Invalid data for ${sym}: ${v.errors.join("; ")}`); return []; }
+  }
+
   const results = [];
 
   for (const [sym, prices] of Object.entries(priceArrays)) {
@@ -45,6 +51,7 @@ export function momentumScan(priceArrays, lookbacks = [21, 63, 126, 252]) {
   }
 
   return results.sort((a, b) => b.compositeScore - a.compositeScore);
+  } catch (err) { console.error(`[momentumScan] Failed: ${err.message}`); return []; }
 }
 
 /**
