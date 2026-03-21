@@ -130,19 +130,51 @@ export function normalizeWeights(weights, options = {}) {
   const scale = targetSum / sum;
   w = w.map(v => v * scale);
 
-  // Re-apply bounds after scaling (iterative clip-and-rescale)
+  // Re-apply bounds after scaling (iterative clip-and-redistribute)
   if (Number.isFinite(minWeight) || Number.isFinite(maxWeight)) {
-    for (let iter = 0; iter < 10; iter++) {
-      let clipped = false;
+    for (let iter = 0; iter < 20; iter++) {
+      let excess = 0;
+      const capped = new Array(w.length).fill(false);
+
       for (let i = 0; i < w.length; i++) {
-        if (w[i] < minWeight) { w[i] = minWeight; clipped = true; }
-        if (w[i] > maxWeight) { w[i] = maxWeight; clipped = true; }
+        if (w[i] > maxWeight) {
+          excess += w[i] - maxWeight;
+          w[i] = maxWeight;
+          capped[i] = true;
+        } else if (w[i] < minWeight) {
+          excess += w[i] - minWeight; // negative excess
+          w[i] = minWeight;
+          capped[i] = true;
+        }
       }
-      if (!clipped) break;
-      const newSum = w.reduce((a, b) => a + b, 0);
-      if (Math.abs(newSum) < 1e-15) break;
-      const rescale = targetSum / newSum;
-      w = w.map(v => v * rescale);
+
+      if (Math.abs(excess) < 1e-12) break;
+
+      // Redistribute excess to uncapped positions proportionally
+      // or equally if none have weight yet
+      const uncappedIndices = [];
+      for (let i = 0; i < w.length; i++) {
+        if (!capped[i] && w[i] < maxWeight - 1e-12) {
+          uncappedIndices.push(i);
+        }
+      }
+
+      if (uncappedIndices.length === 0) {
+        // All positions are at cap; cannot redistribute further
+        // This is the best feasible solution (may not sum exactly to targetSum)
+        break;
+      }
+
+      const uncappedSum = uncappedIndices.reduce((s, i) => s + Math.abs(w[i]), 0);
+      for (const i of uncappedIndices) {
+        if (uncappedSum > 1e-12) {
+          // Proportional redistribution
+          w[i] += excess * (Math.abs(w[i]) / uncappedSum);
+        } else {
+          // Equal redistribution to zero-weight positions
+          w[i] += excess / uncappedIndices.length;
+        }
+      }
     }
   }
 

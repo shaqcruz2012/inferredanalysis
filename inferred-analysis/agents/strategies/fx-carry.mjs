@@ -301,6 +301,7 @@ export function combinedFXStrategy(rateHistories, yields, pppRates, options = {}
     });
   }
   return signals;
+  } catch (err) { console.error(`[combinedFXStrategy] Failed: ${err.message}`); return []; }
 }
 
 // ─── FX Risk Metrics ────────────────────────────────────
