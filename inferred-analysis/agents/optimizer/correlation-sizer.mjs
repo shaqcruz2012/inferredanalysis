@@ -13,6 +13,7 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, applyPositionLimits, normalizeWeights, validateAllocation } from "../shared/constraints.mjs";
 
 /**
  * Compute rolling correlation between two return series.
@@ -63,11 +64,11 @@ function correlationMatrix(returnArrays, symbols) {
  */
 export class CorrelationSizer {
   constructor(options = {}) {
-    this.maxPositionSize = options.maxPositionSize || 0.25;
-    this.correlationPenalty = options.correlationPenalty || 0.5;
-    this.diversificationBonus = options.diversificationBonus || 0.3;
-    this.lookback = options.lookback || 63;
-    this.targetRisk = options.targetRisk || 0.01; // daily risk target
+    this.maxPositionSize = Math.min(options.maxPositionSize || 0.25, BOUNDS.maxSinglePosition);
+    this.correlationPenalty = Math.max(0, Math.min(1, options.correlationPenalty || 0.5));
+    this.diversificationBonus = Math.max(0, Math.min(1, options.diversificationBonus || 0.3));
+    this.lookback = Math.max(10, Math.min(252, options.lookback || 63));
+    this.targetRisk = Math.max(0.001, Math.min(0.10, options.targetRisk || 0.01)); // daily risk target
   }
 
   /**

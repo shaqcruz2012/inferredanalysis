@@ -207,6 +207,10 @@ export function varianceRiskPremium(prices, window = 21) {
  * Generate signals from volatility analysis.
  */
 export function volSignals(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[volSignals] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const { shortWindow = 5, longWindow = 63, volWindow = 21 } = options;
 
   const termStructure = volTermStructure(prices, shortWindow, longWindow);

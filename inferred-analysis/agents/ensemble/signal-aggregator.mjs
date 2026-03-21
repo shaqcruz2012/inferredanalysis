@@ -86,30 +86,46 @@ function rankWeighted(agentSignalsByDate, threshold = 0.3) {
 
 // ─── Main Aggregation Function ──────────────────────────────
 
+import { alignSignals, getSignalOverlap } from "../shared/signal-aligner.mjs";
+
 /**
  * Aggregate signals from multiple agents into a single ensemble signal stream.
+ *
+ * Signals are aligned before aggregation using the signal-aligner module.
+ * By default uses 'union' alignment (carry-forward for missing dates).
+ * Pass opts.alignMethod to override: 'intersection', 'union', or 'latest'.
  *
  * @param {Array} agentSignals - Array of { name, signals: [{ date, signal, price }], weight? }
  * @param {Object} opts
  * @param {string} opts.method - Aggregation method: "majority" | "weighted" | "unanimous" | "rank"
  * @param {number} opts.threshold - Signal threshold for weighted/rank methods (default 0.3)
+ * @param {string} opts.alignMethod - Signal alignment method (default "union")
  * @returns {Array} Combined signal array: [{ date, signal, price, contributions }]
  */
 export function aggregateSignals(agentSignals, opts = {}) {
   const method = opts.method || "weighted";
   const threshold = opts.threshold != null ? opts.threshold : 0.3;
+  const alignMethod = opts.alignMethod || "union";
 
   if (agentSignals.length === 0) return [];
 
-  // Build a date-indexed map for each agent's signals
+  // Align signals across agents before aggregation
+  const aligned = alignSignals(agentSignals, alignMethod);
+
+  // Build a date-indexed map from the aligned signals
   const dateMap = new Map(); // date -> [{ name, signal, weight }]
 
-  for (const agent of agentSignals) {
+  for (const agent of aligned) {
     for (const sig of agent.signals) {
       if (!dateMap.has(sig.date)) {
         dateMap.set(sig.date, { price: sig.price, agents: [] });
       }
-      dateMap.get(sig.date).agents.push({
+      const entry = dateMap.get(sig.date);
+      // Prefer a real price over a carried-forward null
+      if (sig.price != null && entry.price == null) {
+        entry.price = sig.price;
+      }
+      entry.agents.push({
         name: agent.name,
         signal: sig.signal,
         weight: agent.weight != null ? agent.weight : 1,
@@ -117,14 +133,11 @@ export function aggregateSignals(agentSignals, opts = {}) {
     }
   }
 
-  // Only keep dates where ALL agents have signals
-  const numAgents = agentSignals.length;
   const combined = [];
-
   const sortedDates = [...dateMap.keys()].sort();
+
   for (const date of sortedDates) {
     const entry = dateMap.get(date);
-    if (entry.agents.length < numAgents) continue; // skip partial dates
 
     let signal;
     switch (method) {

@@ -293,11 +293,46 @@ export const DEFAULT_SYMBOLS = [
 // ─── Fallback: Realistic Synthetic Data ──────────────────
 
 /**
+ * @deprecated DEPRECATED: Use data-source-manager.getPrices() instead.
+ * Synthetic data will be removed in v2.0.
+ *
  * Generate realistic price data when API is unavailable.
  * Uses geometric Brownian motion with mean-reverting volatility.
  * Better than pure random walk — mimics real equity behavior.
+ *
+ * WARNING: This function generates FAKE data. All callers should migrate to
+ * import { getPrices } from "../data/data-source-manager.mjs" which will
+ * automatically prefer real data and only fall back to synthetic as a last resort.
  */
 export function generateRealisticPrices(symbol, startDate = "2020-01-01", endDate = "2025-03-01") {
+  // Deprecation warning — emitted once per symbol per process to avoid log spam
+  if (!generateRealisticPrices._warned) generateRealisticPrices._warned = new Set();
+  if (!generateRealisticPrices._warned.has(symbol)) {
+    generateRealisticPrices._warned.add(symbol);
+    console.warn(
+      `  [DEPRECATED] generateRealisticPrices("${symbol}") called. ` +
+      `Use data-source-manager.getPrices() instead. Synthetic data will be removed in v2.0.`
+    );
+  }
+
+  // Track synthetic usage if the tracker is available
+  try {
+    // Determine caller from stack trace for tracking
+    const callerStack = new Error().stack || "";
+    const callerLine = callerStack.split("\n").find(
+      (line, i) => i > 1 && !line.includes("fetch.mjs") && !line.includes("data-source-manager")
+    ) || "unknown";
+    const callerModule = callerLine.replace(/.*[/\\]([^/\\]+)\.(mjs|js).*/, "$1") || "unknown";
+
+    // Lazy import to avoid circular dependency at module load time
+    import("./data-source-manager.mjs").then(dsm => {
+      dsm.trackSyntheticUsage(callerModule, symbol, `Direct call to generateRealisticPrices()`);
+    }).catch(() => {
+      // Tracker not available — continue without tracking
+    });
+  } catch {
+    // Tracking is best-effort, never block on failure
+  }
   // Seed parameters by symbol for reproducibility
   const seed = [...symbol].reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
   const seedRng = (n) => {

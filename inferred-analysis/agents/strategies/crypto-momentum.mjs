@@ -288,6 +288,7 @@ export function cryptoBreakout(prices, options = {}) {
     }
   }
   return signals;
+  } catch (err) { console.error(`[cryptoBreakout] Failed: ${err.message}`); return []; }
 }
 
 // ─── 4. Trend Following (EMA Crossover + Vol Filter) ─────
@@ -297,6 +298,10 @@ export function cryptoBreakout(prices, options = {}) {
  * Higher vol threshold than equities — crypto needs room to breathe.
  */
 export function cryptoTrendFollowing(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[cryptoTrendFollowing] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const {
     fastPeriod = 12,
     slowPeriod = 26,
@@ -343,6 +348,7 @@ export function cryptoTrendFollowing(prices, options = {}) {
     }
   }
   return signals;
+  } catch (err) { console.error(`[cryptoTrendFollowing] Failed: ${err.message}`); return []; }
 }
 
 // ─── 5. Crypto-Specific Risk Metrics ─────────────────────

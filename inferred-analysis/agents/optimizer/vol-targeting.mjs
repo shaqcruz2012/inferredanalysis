@@ -174,9 +174,9 @@ export class VolatilityTargeter {
    * @param {number} maxLeverage - hard cap on leverage scalar
    */
   constructor(targetVol = 0.10, lookback = 21, maxLeverage = 2.0) {
-    this.targetVol = targetVol;
-    this.lookback = lookback;
-    this.maxLeverage = maxLeverage;
+    this.targetVol = clampParam("targetVol", targetVol);
+    this.lookback = Math.max(5, Math.min(252, lookback));
+    this.maxLeverage = clampParam("maxLeverage", maxLeverage);
     this._exposureHistory = [];
   }
 

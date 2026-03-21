@@ -468,6 +468,92 @@ async function main() {
     }
   }
 
+  // ─── Genetic Evolution Path (opt-in via --genetic) ──────
+  // Uses GeneticOptimizer as an alternative to random mutation.
+  // Evolves a population of strategy parameter sets, scored by Sharpe/Sortino,
+  // and keeps the top N elite genomes across generations.
+  if (opts.useGenetic) {
+    console.log(`\n─── Genetic Strategy Evolution (enabled via --genetic) ───`);
+    console.log(`  Population: ${opts.geneticPopulation}  Generations: ${opts.geneticGenerations}  Elite: ${opts.geneticEliteCount}\n`);
+
+    // Build a fitness function that backtests a genome by writing it to the
+    // strategy file, running the existing backtest harness, and scoring with
+    // a blend of Sharpe and Sortino (matching evaluate.js risk_adjusted_returns criteria).
+    const geneticFitness = (genome, _prices) => {
+      // Write genome params into the strategy file as CONFIG overrides
+      let content = readFileSync(stratPath, "utf-8");
+      for (const [key, value] of Object.entries(genome)) {
+        const regex = new RegExp(`${key}:\\s*[\\d.\\-]+`);
+        if (regex.test(content)) {
+          content = content.replace(regex, `${key}: ${typeof value === "number" ? value.toFixed(6) : value}`);
+        }
+      }
+      writeFileSync(stratPath, content);
+
+      const result = runBacktest(stratPath, opts.agent);
+      if (!result.ok) return -10;
+
+      const sharpe = result.metrics.sharpe ?? -Infinity;
+      const sortino = result.metrics.sortino ?? sharpe;
+      // Blended fitness: 60% Sharpe + 40% Sortino, penalize extreme drawdowns
+      const ddPenalty = (result.metrics.max_drawdown ?? 0) > 0.20
+        ? (result.metrics.max_drawdown - 0.20) * 5
+        : 0;
+      return 0.6 * sharpe + 0.4 * sortino - ddPenalty;
+    };
+
+    const optimizer = new GeneticOptimizer({
+      populationSize: opts.geneticPopulation,
+      generations: opts.geneticGenerations,
+      eliteCount: opts.geneticEliteCount,
+      mutationRate: 0.15,
+      fitnessFunction: geneticFitness,
+    });
+
+    // GeneticOptimizer.evolve() expects a prices array for default fitness;
+    // our custom fitness ignores it, so pass an empty array.
+    const evoResult = optimizer.evolve([]);
+
+    console.log(`\n─── Genetic Evolution Complete ───`);
+    console.log(`  Best Fitness (blended Sharpe/Sortino): ${evoResult.bestFitness.toFixed(4)}`);
+    console.log(`  Best Genome:`);
+    for (const [key, value] of Object.entries(evoResult.bestGenome)) {
+      console.log(`    ${key.padEnd(14)} = ${typeof value === "number" ? value.toFixed(4) : value}`);
+    }
+
+    // Apply the best genome to the strategy file and run final backtest
+    geneticFitness(evoResult.bestGenome, []);
+    const finalGenetic = runBacktest(stratPath, opts.agent);
+    if (finalGenetic.ok) {
+      const gSharpe = finalGenetic.metrics.sharpe ?? -Infinity;
+      if (gSharpe > bestSharpe) {
+        console.log(`  Genetic result BEATS baseline: ${gSharpe.toFixed(4)} > ${bestSharpe.toFixed(4)}`);
+        bestSharpe = gSharpe;
+        logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "keep");
+      } else {
+        console.log(`  Genetic result does not beat baseline: ${gSharpe.toFixed(4)} <= ${bestSharpe.toFixed(4)}`);
+        writeFileSync(stratPath, baselineContent);
+        logResult(opts.agent, "genetic_evolution", finalGenetic.metrics, "discard");
+      }
+    } else {
+      console.log(`  Genetic best genome failed backtest — reverting to baseline`);
+      writeFileSync(stratPath, baselineContent);
+    }
+
+    // Log elite population for future seeding
+    if (evoResult.finalPopulation) {
+      const elitePath = join(ROOT, "agents", "outputs", `${opts.agent}_genetic_elite.json`);
+      const eliteData = evoResult.finalPopulation
+        .slice(0, opts.geneticEliteCount)
+        .map((genome, i) => ({ rank: i + 1, genome, fitness: evoResult.history[evoResult.history.length - 1]?.bestFitness ?? 0 }));
+      mkdirSync(dirname(elitePath), { recursive: true });
+      writeFileSync(elitePath, JSON.stringify(eliteData, null, 2));
+      console.log(`  Elite population saved: ${elitePath}`);
+    }
+
+    console.log();
+  }
+
   // Autoresearch loop
   let keepCount = 0;
   let discardCount = 0;

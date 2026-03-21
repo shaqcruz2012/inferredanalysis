@@ -16,6 +16,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { appendTSV, initTSV } from "./shared/atomic-writer.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RESULTS_FILE = path.join(__dirname, "results.tsv");
@@ -46,8 +47,8 @@ function init(tag) {
   }
 
   // Initialize results.tsv if it doesn't exist
-  if (!fs.existsSync(RESULTS_FILE)) {
-    fs.writeFileSync(RESULTS_FILE, TSV_HEADER + "\n");
+  initTSV(RESULTS_FILE, TSV_HEADER);
+  if (fs.existsSync(RESULTS_FILE)) {
     console.log(`Created ${RESULTS_FILE}`);
   }
 
@@ -83,7 +84,7 @@ function logExperiment(args) {
 
   const row = [id, commit, scores.novelty, scores.accuracy, scores.actionability, scores.depth, composite.toFixed(1), status, description, timestamp].join("\t");
 
-  fs.appendFileSync(RESULTS_FILE, row + "\n");
+  appendTSV(RESULTS_FILE, row);
 
   console.log(`Logged experiment ${id}:`);
   console.log(`  Novelty:       ${scores.novelty}`);
