@@ -20,6 +20,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { appendTSV, initTSV } from "../shared/atomic-writer.mjs";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
 import { SmartOrderRouter } from "./smart-order-router.mjs";
@@ -147,15 +148,15 @@ const alpaca = {
 
 // ─── Trade Logger ─────────────────────────────────────────
 
+const TRADES_HEADER = [
+  "timestamp", "agent", "symbol", "side", "qty", "price",
+  "order_id", "status", "equity_before", "equity_after",
+  "daily_pnl", "signal_source",
+].join("\t");
+
 function ensureTradesFile() {
   mkdirSync(OUTPUTS_DIR, { recursive: true });
-  if (!existsSync(TRADES_TSV)) {
-    writeFileSync(TRADES_TSV, [
-      "timestamp", "agent", "symbol", "side", "qty", "price",
-      "order_id", "status", "equity_before", "equity_after",
-      "daily_pnl", "signal_source",
-    ].join("\t") + "\n");
-  }
+  initTSV(TRADES_TSV, TRADES_HEADER);
 }
 
 function logTrade(entry) {
@@ -174,7 +175,7 @@ function logTrade(entry) {
     entry.daily_pnl || 0,
     entry.signal_source || "",
   ].join("\t");
-  appendFileSync(TRADES_TSV, line + "\n");
+  appendTSV(TRADES_TSV, line, TRADES_HEADER);
 }
 
 // ─── Strategy Bridge ──────────────────────────────────────

@@ -181,6 +181,7 @@ export function overnightGapStrategy(prices, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[overnightGapStrategy] Failed: ${err.message}`); return []; }
 }
 
 // ─── Opening Range Breakout ─────────────────────────────
@@ -190,6 +191,10 @@ export function overnightGapStrategy(prices, options = {}) {
  * Uses daily OHLC to approximate (open-to-high/low ratio).
  */
 export function openingRangeBreakout(prices, options = {}) {
+  try {
+  const v = validatePriceData(prices);
+  if (!v.valid) { console.error(`[openingRangeBreakout] Invalid price data: ${v.errors.join("; ")}`); return []; }
+
   const { lookback = 5, threshold = 0.5 } = options;
 
   const signals = [];
@@ -225,6 +230,7 @@ export function openingRangeBreakout(prices, options = {}) {
   }
 
   return signals;
+  } catch (err) { console.error(`[openingRangeBreakout] Failed: ${err.message}`); return []; }
 }
 
 // ─── Turn-of-Month Effect ───────────────────────────────
