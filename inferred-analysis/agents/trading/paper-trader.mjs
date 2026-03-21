@@ -673,6 +673,21 @@ async function runPaperTrading(opts) {
       try {
         await alpaca.closePosition(symbol);
         console.log("  Position closed.");
+
+        // Update portfolio tracker on close fill
+        const closeQty = Math.abs(parseFloat(currentPosition.qty));
+        const closeSide = parseFloat(currentPosition.qty) > 0 ? "sell" : "buy";
+        const closeResult = tracker.addTrade({
+          symbol,
+          side: closeSide,
+          qty: closeQty,
+          price: latestSignal.price,
+          agent: agentRole,
+          orderId: "close",
+        });
+        console.log(`  Tracker: closed ${symbol}, realized P&L: $${closeResult.realized}`);
+        invalidateRiskCache();
+
         logTrade({
           agent: agentRole,
           symbol,
