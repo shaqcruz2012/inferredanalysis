@@ -248,27 +248,873 @@ Cache management operates at two levels:
 
 ---
 
-## Section 4: Alpha Generation Pipeline
+# Section 4: Alpha Generation Pipeline
 
-*Section pending — agent still processing.*
+## 4.1 Strategy Architecture Overview
+
+The alpha generation pipeline comprises 27 strategy modules, each conforming to a standardized signal interface that produces directional signals with confidence scores. Strategies span five asset classes (equities, fixed income, FX, crypto, volatility derivatives) and seven methodological families. Every strategy module exports a `run()` or `generate()` function that accepts cleaned market data from `data-source-manager.mjs` and returns a signal object containing: `direction` (+1 long, -1 short, 0 flat), `confidence` (0.0 to 1.0), `metadata` (strategy-specific diagnostics), and `timestamp`.
+
+## 4.2 Strategy Families and Mathematical Foundations
+
+### 4.2.1 Trend Following (`strategies/trend-following.mjs`)
+
+The core trend-following strategy implements dual moving average crossover with adaptive lookback selection:
+
+```
+Signal = sign(MA_fast(t) - MA_slow(t))
+Confidence = |MA_fast(t) - MA_slow(t)| / ATR(t, 14)
+```
+
+Where `MA_fast` defaults to 10-day EMA and `MA_slow` to 50-day EMA. The ATR-normalized confidence score ensures that crossover signals are weighted by their magnitude relative to recent volatility. Adaptive lookback adjusts fast/slow periods based on realized volatility regime: high-volatility regimes (annualized vol > 25%) shorten lookbacks by 30%, while low-volatility regimes (vol < 10%) extend them by 50%.
+
+Position sizing integrates with the risk gateway via a stop-loss at 2x ATR below entry and take-profit at 3x ATR above entry, yielding a 1:1.5 risk-reward ratio before transaction costs.
+
+### 4.2.2 Statistical Arbitrage (`strategies/stat_arb_quant.js`)
+
+The stat arb module implements cointegration-based pairs trading using the Engle-Granger two-step method:
+
+**Step 1: Cointegration Test.**
+```
+y(t) = α + β × x(t) + ε(t)
+ADF test on ε(t): reject H0 (unit root) at p < 0.05
+```
+
+The hedge ratio β is estimated via OLS regression over a rolling 252-day window. Cointegration is verified via the Augmented Dickey-Fuller test on the residual spread, with critical values at the 1%, 5%, and 10% significance levels.
+
+**Step 2: Signal Generation.**
+```
+z(t) = (spread(t) - MA(spread, 60)) / σ(spread, 60)
+
+Entry: |z(t)| > 2.0 (trade mean reversion)
+Exit: |z(t)| < 0.5 (spread normalized)
+Stop: |z(t)| > 4.0 (cointegration breakdown)
+```
+
+The system maintains a universe of candidate pairs ranked by cointegration p-value, spread half-life (target: 5-60 days via Ornstein-Uhlenbeck estimation), and historical Hurst exponent (target: H < 0.5 indicating mean-reverting behavior).
+
+### 4.2.3 Hidden Markov Model Regime Strategy (`strategies/hmm-regime.mjs`)
+
+Implements a 3-state HMM (bull, bear, sideways) with Gaussian emission distributions:
+
+```
+States: S = {Bull, Bear, Sideways}
+Emissions: P(r_t | S_k) = N(μ_k, σ_k²)
+
+Bull:     μ = +0.05% daily, σ = 0.8%
+Bear:     μ = -0.03% daily, σ = 1.5%
+Sideways: μ = +0.01% daily, σ = 0.5%
+```
+
+Parameter estimation uses the Baum-Welch algorithm (EM for HMMs) with forward-backward recursion. The Viterbi algorithm decodes the most likely state sequence. Trading signals are generated from regime transitions:
+
+- Bull → Bear: go short (confidence = posterior probability of Bear state)
+- Bear → Bull: go long (confidence = posterior probability of Bull state)
+- Sideways: reduce position size by 50% (low-confidence environment)
+
+The transition matrix is re-estimated every 63 trading days (quarterly) using expanding window data.
+
+### 4.2.4 Kalman Filter Tracker (`strategies/kalman-tracker.mjs`)
+
+Implements a state-space model for adaptive trend extraction:
+
+```
+State equation:    x(t) = F × x(t-1) + w(t),  w ~ N(0, Q)
+Observation:       y(t) = H × x(t) + v(t),     v ~ N(0, R)
+
+State vector: x = [level, trend]
+F = [[1, 1], [0, 1]]   (random walk with drift)
+H = [1, 0]              (observe level only)
+Q = [[q1, 0], [0, q2]]  (process noise, adaptive)
+R = observation noise variance (estimated from residuals)
+```
+
+The Kalman gain K(t) automatically adapts between responsiveness and smoothing. Trading signals derive from the filtered trend component: long when trend > 0, short when trend < 0, with confidence proportional to |trend| / σ(trend). The innovation sequence (prediction errors) is monitored for normality — significant deviation triggers model re-initialization.
+
+### 4.2.5 Fractal Analysis Strategy (`strategies/fractal-analysis.mjs`)
+
+Computes the Hurst exponent via rescaled range (R/S) analysis across multiple time scales:
+
+```
+H = log(R/S) / log(n)
+
+H > 0.5: Trending (momentum strategy)
+H = 0.5: Random walk (no signal)
+H < 0.5: Mean-reverting (contrarian strategy)
+```
+
+The strategy adaptively switches between momentum (H > 0.6) and mean-reversion (H < 0.4) regimes. Fractal dimension D = 2 - H provides an additional smoothness measure. Signal confidence scales with |H - 0.5|, with a dead zone at H ∈ [0.45, 0.55] where no signal is generated.
+
+### 4.2.6 Volatility Surface Strategies (`strategies/vol-surface.mjs`)
+
+Models the implied volatility surface across strike and tenor dimensions:
+
+```
+IV(K, T) = σ_ATM(T) + skew(T) × moneyness + smile(T) × moneyness²
+
+Where moneyness = log(K / S) / (σ_ATM × √T)
+```
+
+Trading signals are generated from:
+1. **Term structure trades**: Long vol when near-term IV < far-term IV by > 1 standard deviation (contango compression)
+2. **Skew trades**: Long when put skew is elevated relative to historical (>75th percentile), indicating crash hedging demand
+3. **Variance risk premium**: Short realized vol vs. long implied vol when the spread exceeds 3% annualized
+
+### 4.2.7 Carry Strategy (`strategies/carry-trade.mjs`)
+
+Implements cross-asset carry across three domains:
+
+**FX Carry**: Long high-yield currencies, short low-yield currencies, ranked by 3-month interest rate differential.
+
+**Fixed Income Carry**: Roll yield = (yield_far - yield_near) / duration_gap. Long bonds with positive roll yield exceeding transaction costs.
+
+**Equity Carry**: Dividend yield minus financing cost. Long stocks with dividend yield > risk-free rate + 2%.
+
+All carry signals are crash-hedged via the dynamic hedger module when the correlation regime enters CONVERGENCE state.
+
+### 4.2.8 Additional Strategy Modules
+
+The remaining strategies follow similar architectural patterns:
+
+| Strategy | Method | Key Parameters |
+|----------|--------|----------------|
+| `momentum-factor.mjs` | Cross-sectional momentum (12-1 month) | Lookback: 252d, skip: 21d, long top quintile |
+| `mean-reversion.mjs` | Bollinger Band mean reversion | Period: 20, width: 2σ, entry/exit thresholds |
+| `event-study.mjs` | Earnings/macro event response patterns | Event window: [-5, +10] days, CAR significance |
+| `market-making.mjs` | Bid-ask spread capture with inventory mgmt | Half-spread: 5bps, max inventory: 100 units |
+| `options-pricing.mjs` | Black-Scholes mispricing detection | IV vs. RV divergence > 2σ triggers signal |
+| `adaptive-momentum.mjs` | Regime-switching momentum/MR | HMM state drives strategy selection |
+| `rsi-contrarian.mjs` | RSI oversold/overbought reversal | RSI(14) < 30 = buy, > 70 = sell |
+| `price-channel.mjs` | Donchian channel breakout | 20-day high/low channel, ATR-based stops |
+| `macro-regime.mjs` | FRED data macro factor rotation | Growth/inflation quadrant → sector allocation |
+| `microstructure.mjs` | Order flow imbalance signals | Volume-weighted price pressure, VPIN proxy |
+
+## 4.3 Strategy Signal Interface
+
+All strategies conform to a standardized output contract consumed by the ensemble layer:
+
+```javascript
+{
+  strategyName: string,          // Unique identifier
+  symbol: string,                // Target instrument
+  direction: -1 | 0 | 1,        // Short, flat, long
+  confidence: number,            // 0.0 to 1.0
+  timestamp: string,             // ISO 8601
+  horizon: string,               // "short" | "medium" | "long"
+  metadata: {
+    entryPrice: number,
+    stopLoss: number,
+    takeProfit: number,
+    regime: string,              // Strategy-detected regime
+    diagnostics: object          // Strategy-specific metrics
+  }
+}
+```
+
+## 4.4 Strategy Performance Tracking
+
+Each strategy's performance is tracked via `results.tsv` files maintained by the agent-runner, recording per-experiment outcomes: Sharpe ratio, Sortino ratio, maximum drawdown, win rate, trade count, and keep/discard decision. The feedback loop module (`shared/feedback-loop.mjs`) aggregates these results to bias future mutation selection toward historically successful strategy variants (see Section 8.4).
 
 ---
 
-## Section 5: Ensemble Methods & Signal Aggregation
+# Section 5: Ensemble Methods & Signal Aggregation
 
-*Section pending — agent still processing.*
+## 5.1 Ensemble Architecture
+
+The ensemble layer (`ensemble/` directory, 6 modules) aggregates signals from the 27 strategy modules into unified portfolio-level decisions. The pipeline follows a four-stage process: signal alignment → regime detection → signal blending → final aggregation. The orchestrator module `run-ensemble.mjs` coordinates the full pipeline.
+
+## 5.2 Signal Alignment (`shared/signal-aligner.mjs`)
+
+Before aggregation, signals from heterogeneous strategies must be temporally and semantically aligned:
+
+**Temporal Alignment.** Strategies produce signals at different frequencies (tick-level for microstructure, daily for trend-following, weekly for macro). The aligner snaps all signals to a common time grid (configurable: 1-minute, 15-minute, daily) using last-observation-carried-forward (LOCF) interpolation. Signals older than the configurable staleness threshold (default: 2x the strategy's native frequency) are marked stale and excluded from aggregation.
+
+**Semantic Normalization.** Raw signals are normalized to a common [-1, +1] scale:
+```
+normalized_signal = raw_signal / max(|raw_signal| over lookback window)
+```
+Confidence scores are preserved as separate weights in the aggregation step.
+
+**Cross-Asset Resolution.** When multiple strategies target the same instrument, signals are grouped by symbol. When strategies target different instruments within the same asset class, signals are preserved independently for portfolio-level construction.
+
+## 5.3 Regime Detection (`ensemble/regime-detector.mjs`)
+
+The regime detector classifies the current market environment to inform signal weighting:
+
+**Volatility Regime Classification:**
+```
+vol_ratio = realized_vol(20d) / realized_vol(120d)
+
+HIGH_VOL:    vol_ratio > 1.5 AND abs_vol > 20% annualized
+LOW_VOL:     vol_ratio < 0.7 AND abs_vol < 10% annualized
+NORMAL_VOL:  otherwise
+CRISIS:      vol_ratio > 2.5 OR abs_vol > 40% annualized
+```
+
+**Trend Regime Classification:**
+```
+trend_score = (price - MA(200)) / (ATR(20) × √200)
+
+STRONG_TREND:  |trend_score| > 2.0
+MILD_TREND:    |trend_score| > 1.0
+RANGE_BOUND:   |trend_score| < 0.5
+TRANSITIONING: otherwise
+```
+
+**Composite Regime:** The final regime is a tuple (volatility_state, trend_state) that maps to strategy weight adjustments:
+
+| Regime | Momentum Weight | Mean-Reversion Weight | Vol Strategy Weight | Carry Weight |
+|--------|----------------|----------------------|--------------------:|-------------:|
+| LOW_VOL + RANGE_BOUND | 0.5x | 1.5x | 0.5x | 1.5x |
+| LOW_VOL + STRONG_TREND | 1.5x | 0.5x | 0.5x | 1.0x |
+| HIGH_VOL + RANGE_BOUND | 0.5x | 1.0x | 1.5x | 0.5x |
+| HIGH_VOL + STRONG_TREND | 1.0x | 0.5x | 1.5x | 0.5x |
+| CRISIS (any trend) | 0.25x | 0.25x | 2.0x | 0.0x |
+
+## 5.4 Signal Aggregation Methods (`ensemble/signal-aggregator.mjs`)
+
+Three aggregation methods are supported, selectable per ensemble run:
+
+### 5.4.1 Weighted Aggregation (Default)
+
+```
+S_agg = Σ (w_i × regime_adj_i × confidence_i × signal_i) / Σ (w_i × regime_adj_i × confidence_i)
+```
+
+Where:
+- `w_i` = base strategy weight (from performance history or equal-weight)
+- `regime_adj_i` = regime-dependent multiplier from the table above
+- `confidence_i` = strategy's self-reported confidence score
+- `signal_i` = normalized directional signal [-1, +1]
+
+Strategy weights are updated via the online learning module (Section 9.3), using Hedge algorithm multiplicative weight updates based on realized P&L attribution.
+
+### 5.4.2 Majority Voting
+
+```
+S_majority = sign(Σ sign(signal_i))   if count(sign(signal_i) ≠ 0) ≥ quorum
+           = 0                         otherwise
+
+Quorum = ceil(active_strategies × 0.5)   (default: simple majority)
+Confidence = |Σ sign(signal_i)| / count(active_strategies)
+```
+
+Majority voting is used as a confirmation filter: trades are only executed when both the weighted aggregator AND majority voting agree on direction.
+
+### 5.4.3 Unanimous Voting
+
+```
+S_unanimous = signal_direction   if ALL active strategies agree on direction
+            = 0                  otherwise
+```
+
+Unanimous voting is reserved for high-conviction trades with maximum position sizing. In practice, unanimity across 27 strategies is rare; the system uses a configurable "super-majority" threshold (default: 80% agreement) as a practical approximation.
+
+## 5.5 Signal Blending (`ensemble/signal-blender.mjs`)
+
+The signal blender implements time-horizon-aware combination:
+
+**Multi-Horizon Blending.** Strategies are classified by horizon (short: 1-5 days, medium: 5-21 days, long: 21-63 days). The blender produces separate signals per horizon, then combines them:
+
+```
+S_blended = α_short × S_short + α_medium × S_medium + α_long × S_long
+
+Default weights: α_short = 0.25, α_medium = 0.50, α_long = 0.25
+```
+
+Horizon weights adapt based on recent performance: if short-horizon strategies outperform over the trailing 20 days, α_short increases (bounded by [0.1, 0.5]). Adaptation uses exponential smoothing with decay factor 0.95.
+
+**Correlation-Adjusted Weighting.** When strategy signals exhibit high pairwise correlation (ρ > 0.7), the blender reduces the effective weight of redundant signals:
+
+```
+effective_weight_i = base_weight_i × (1 - avg_correlation_with_others_i)
+```
+
+This prevents correlated strategies from dominating the ensemble signal and maintains effective diversification.
+
+## 5.6 Strategy Combination (`ensemble/strategy-combiner.mjs`)
+
+The combiner module handles portfolio-level signal construction from multiple instruments:
+
+**Cross-Asset Allocation.** When ensemble signals exist for multiple instruments, the combiner determines the portfolio-level allocation using risk-parity weighting across signals:
+
+```
+allocation_i = signal_strength_i × (1 / vol_i) / Σ (signal_strength_j × (1 / vol_j))
+```
+
+**Conflict Resolution.** When strategies produce conflicting signals for the same instrument:
+1. If confidence-weighted net signal |S_agg| < 0.1: no position (insufficient conviction)
+2. If confidence-weighted net signal |S_agg| ≥ 0.1 but < 0.3: reduced position (half normal size)
+3. If confidence-weighted net signal |S_agg| ≥ 0.3: full position in the direction of net signal
+
+## 5.7 Ensemble Execution Flow (`ensemble/run-ensemble.mjs`)
+
+The complete ensemble pipeline per execution cycle:
+
+```
+1. Load all strategy signals from latest cycle
+2. Filter: remove stale signals (>2x native frequency age)
+3. Filter: remove signals from quarantined/circuit-broken strategies
+4. Align: snap to common time grid via signal-aligner
+5. Detect: classify current regime via regime-detector
+6. Aggregate: compute weighted ensemble signal per instrument
+7. Blend: combine across time horizons via signal-blender
+8. Combine: construct portfolio-level allocation via strategy-combiner
+9. Gate: pass combined signal through risk-gateway (Section 6)
+10. Output: final position targets with sizes, stops, and confidence
+```
+
+The ensemble caches its output with a 60-second TTL and emits diagnostic metadata including: strategy agreement ratio, effective number of independent signals, regime classification, and per-strategy contribution to the final signal.
 
 ---
 
-## Section 6: Risk Management Framework
+# Section 6: Risk Management Framework
 
-*Section pending — agent still processing.*
+## 6.1 Architectural Overview
+
+The risk management framework implements a defense-in-depth architecture spanning 21 specialized modules organized into six hierarchical layers. Each layer operates independently, and a trade must pass through all layers before execution. The architecture enforces fail-closed semantics: any layer's inability to compute risk results in trade rejection.
+
+```
+Layer 1: Foundational Risk Computation
+  ├── factor-model.mjs         (6-factor Fama-French decomposition)
+  ├── correlation-monitor.mjs  (rolling correlation matrices, regime detection)
+  ├── bayesian-risk.mjs        (conjugate Normal-Inverse-Gamma posterior estimation)
+  └── risk-monitor.mjs         (Greeks-equivalent metrics, drawdown computation)
+
+Layer 2: Risk Attribution & Position Sizing
+  ├── risk-attribution.mjs     (component VaR, concentration metrics)
+  ├── position-sizer.mjs       (Kelly criterion, risk parity, vol targeting)
+  └── drawdown-analyzer.mjs    (pain index, ulcer index, rolling max DD)
+
+Layer 3: Portfolio Surveillance & Alerts
+  ├── regime-stress-test.mjs   (13 historical + 7 hypothetical scenarios)
+  ├── correlation-regime.mjs   (regime classification: STABLE/RISING/CONVERGENCE/DIVERGENCE)
+  └── dynamic-hedger.mjs       (tail hedge recommendations during drawdown)
+
+Layer 4: Circuit Breaker Architecture
+  └── circuit-breaker.mjs      (3-level state machine: strategy/agent/portfolio)
+
+Layer 5: Unified Risk Decision Gate
+  └── risk-gateway.mjs         (composite risk score, trade gating)
+
+Layer 6: Hard Limits & Guardrails
+  └── trading-guardrails.mjs   (frozen limits, kill switch, autonomy tiers)
+```
+
+## 6.2 Factor Model (Layer 1)
+
+The factor model (`risk/factor-model.mjs`) implements a 6-factor Fama-French decomposition for systematic risk attribution:
+
+**Factors Computed:**
+
+1. **MKT (Market):** Equal-weight average return across all assets
+2. **SMB (Size):** Long small-cap (bottom tercile by dollar volume), short large-cap
+3. **HML (Value):** Long value (low price-to-moving-average ratio), short growth
+4. **WML (Momentum):** Long winners, short losers (252-day lookback, skip recent 21 days)
+5. **VMR (Low Volatility):** Long low-vol assets, short high-vol assets
+6. **QMJ (Quality):** Long high-Sharpe assets, short low-Sharpe assets
+
+**Factor Exposure Regression:**
+```
+r_i(t) = α_i + Σ β_ij × F_j(t) + ε_i(t)
+
+Estimation via OLS: β = (X'X)^{-1} X'y  (Cholesky decomposition)
+Residual vol: annualized volatility of ε_i
+```
+
+**Factor Covariance Matrix:**
+```
+Σ_ij = Cov(F_i, F_j) × 252  [annualized]
+```
+
+**Factor-Neutral Portfolio Construction:**
+```
+w_neutral = w - B(B'B)^{-1}B'w
+Ensures: B'w_neutral ≈ 0 (zero exposure to all factors)
+```
+
+**Portfolio Risk Decomposition:**
+```
+σ²_portfolio = β'Σ_f β + σ²_ε
+Factor risk:      σ_factor = √(β'Σ_f β)
+Idiosyncratic:    σ_specific = √(Σ w_i² σ²_ε_i)
+```
+
+## 6.3 Correlation Monitoring & Regime Detection (Layer 1)
+
+**Rolling Correlation Matrix:**
+```
+ρ_ij(t, window) = Pearson(r_i[t-window:t], r_j[t-window:t])
+Standard window: 60 days
+```
+
+**Regime Detection:**
+```
+ρ_short = avg pairwise correlation (20-day window)
+ρ_long  = avg pairwise correlation (120-day window)
+Δρ = ρ_short - ρ_long
+
+CONVERGENCE:      ρ_short > 0.6 AND Δρ > 0.15
+HIGH_CORRELATION: ρ_short > 0.6
+RISING:           Δρ > 0.15
+DIVERGENCE:       Δρ < -0.15
+STABLE:           otherwise
+```
+
+**Correlation Stability (Frobenius Norm):**
+```
+Stability = 1 - min(||M1 - M2||_F / (n√2), 1)
+Threshold for stable regime: score > 0.7
+```
+
+**Diversification Ratio:**
+```
+DR = (Σ w_i × vol_i) / √(w'Σw)
+
+DR > 1.5: good diversification
+DR > 1.1: moderate
+DR < 1.1: poor (strategies too correlated)
+```
+
+## 6.4 Bayesian Risk Model (Layer 1)
+
+Implements conjugate Normal-Inverse-Gamma posterior estimation for robust risk parameter inference:
+
+**Prior Specification:**
+```
+μ | σ² ~ N(μ_0, σ²/κ_0)
+σ² ~ IG(α_0, β_0)
+
+μ_0 = sample mean, κ_0 = 0.05n, α_0 = 0.025n, β_0 = 0.025n × var(data)
+```
+
+**Posterior Update:**
+```
+κ_n = κ_0 + n
+μ_n = (κ_0 μ_0 + n x̄) / κ_n
+α_n = α_0 + n/2
+β_n = β_0 + ½Σ(x_i - x̄)² + κ_0 n(x̄ - μ_0)² / (2κ_n)
+```
+
+**Posterior Predictive (Student-t):**
+```
+x_{n+1} | data ~ t(df=2α_n, loc=μ_n, scale=√(β_n(κ_n+1)/(α_n κ_n)))
+VaR_95 = -(μ_n + t_{0.05}(2α_n) × scale)
+VaR_99 = -(μ_n + t_{0.01}(2α_n) × scale)
+```
+
+**Bayesian Sharpe Ratio:**
+```
+SR_blended = 0.3 × SR_prior + 0.7 × SR_sample
+SR_prior = 0.4 (skeptical prior)
+Credible interval: SR ± 1.96 × SE, where SE = √((1 + 0.5SR²/252)/n) × √252
+```
+
+**Regime Probabilities:**
+```
+Regimes: {bull: μ=0.05%, σ=1.0%}, {bear: μ=-0.03%, σ=1.8%}, {crisis: μ=-0.15%, σ=3.5%}
+Prior: P(bull)=0.5, P(bear)=0.35, P(crisis)=0.15
+Posterior: P(k|data) ∝ P(data|k) × P(k)  [likelihood × prior]
+```
+
+## 6.5 Greeks-Equivalent Metrics (Layer 1)
+
+The risk monitor computes options-like sensitivity measures adapted for quant portfolios:
+
+| Greek | Formula | Interpretation |
+|-------|---------|----------------|
+| **Delta** | Δ = Σ w_i × E[r_i \| recent] | Portfolio directional bias |
+| **Gamma** | Γ = Σ w_i × (E[r²_i] - E[r_i]²) | Return convexity / non-linearity |
+| **Theta** | Θ = Σ w_i × (E[r_recent] - E[r_alltime]) | Time decay / alpha degradation |
+| **Vega** | ν = Σ w_i × vol_i | Volatility sensitivity |
+
+## 6.6 Value-at-Risk & Stress Testing (Layers 1-3)
+
+**VaR Methodologies:**
+```
+Historical VaR_95:   -quantile(returns, 0.05)
+Parametric VaR_95:   -(μ - 1.645 × σ)
+CVaR_95 (ES):        E[loss | loss > VaR_95]  (average of worst 5%)
+```
+
+**Stress Test Suite — 13 Historical Crises:**
+
+| Scenario | SPY | QQQ | TLT | GLD | XLE |
+|----------|-----|-----|-----|-----|-----|
+| GFC 2008 | -8.9% | -9.2% | +3.5% | +5.0% | -12.0% |
+| COVID Mar 2020 | -12.0% | -10.0% | +5.0% | -3.0% | -25.0% |
+| Flash Crash 2010 | -8.6% | -7.9% | +2.0% | +0.8% | -6.0% |
+| Taper Tantrum 2013 | -1.5% | -2.0% | -3.5% | -6.0% | -2.5% |
+| China Devaluation 2015 | -4.0% | -4.5% | +1.5% | +2.0% | -5.5% |
+| Vol Spike Feb 2018 | -4.2% | -3.9% | -0.5% | -1.0% | -3.5% |
+| Rate Shock 2022 | -3.0% | -4.5% | -4.0% | -1.5% | +2.0% |
+
+**7 Hypothetical Stress Scenarios:**
+
+| Scenario | Key Shocks |
+|----------|-----------|
+| Rate up 200bps | SPY -5%, TLT -8%, GLD -2% |
+| Vol spike 3x | SPY -8%, QQQ -10%, GLD +4% |
+| Correlation → 1.0 | All assets -6% (diversification breakdown) |
+| USD crash | GLD +10%, TLT -4%, XLE +3% |
+| Oil spike 50% | XLE +15%, SPY -3%, GLD +3% |
+| Stagflation | GLD +6%, SPY -4%, TLT -3% |
+| Deflation | TLT +8%, SPY -6%, XLE -10% |
+
+**Portfolio Impact:** `Return_scenario = Σ w_i × shock_i`
+
+**Reverse Stress Test:** Finds scenarios causing loss ≥ target (default -5%) by scanning historical returns and generating synthetic fat-tailed scenarios at 2.5σ.
+
+## 6.7 Position Sizing Algorithms (Layer 2)
+
+### Kelly Criterion
+```
+f* = (p × b - q) / b    where p = win rate, b = avg_win/avg_loss, q = 1-p
+f_kelly = 0.5 × f*      (half-Kelly for conservative sizing)
+```
+
+### Risk Parity Weighting
+```
+w_i = (1/σ_i) / Σ_j(1/σ_j)
+```
+
+### Volatility Targeting
+```
+scalar = target_vol / current_vol,  clamped to [0, 1]
+```
+
+### Maximum Drawdown Sizing
+```
+fraction = min(max_allowed_DD / expected_DD, 1)
+```
+
+### Combined Optimizer (5-step pipeline)
+```
+1. Compute Kelly size per strategy (fraction = 0.5)
+2. Compute risk parity weights
+3. Blend: 50% Kelly + 50% risk parity
+4. Apply vol targeting (target: 10% annualized)
+5. Apply max drawdown cap, enforce constraints:
+   - maxSinglePosition: 20%
+   - minPosition: 1%
+   - maxLeverage: 1.0x
+   - maxDrawdown: 5%
+```
+
+## 6.8 Circuit Breaker Architecture (Layer 4)
+
+**Three-Level State Machine:**
+
+| Level | Breach Condition | Action | Recovery |
+|-------|-----------------|--------|----------|
+| **Strategy** | Cumulative return < -10% OR 10 consecutive losses | Pause strategy, 24h cooldown | 50% position scale, ramp over 5 profitable experiments |
+| **Agent** | Keep rate < 5% (20-experiment window) OR Sharpe stagnation (50 exp) | Pause agent | Suggest reset |
+| **Portfolio** | DD > -15% OR daily loss > -2% OR 3+ agent crashes in 1 hour | Halt ALL trading | Kill switch (requires process restart) |
+
+**State Transitions:**
+```
+NORMAL → (breach) → PAUSED → (cooldown expires) → RECOVERING → (5 profitable) → NORMAL
+
+Recovery position scale:
+  scale = 0.50 + 0.50 × (profitable_count / 5)
+  Starts at 50%, linearly ramps to 100%
+```
+
+## 6.9 Unified Risk Decision Gate (Layer 5)
+
+The risk gateway (`risk-gateway.mjs`) computes a composite risk score aggregating all lower layers:
+
+**Composite Risk Score (0-100):**
+```
+Score = 30 × (Drawdown Risk / 100)
+      + 25 × (Volatility Risk / 100)
+      + 20 × (Correlation Risk / 100)
+      + 15 × (Concentration Risk / 100)
+      + 10 × (Alert Severity / 100)
+```
+
+**Risk-Based Position Scaling:**
+
+| Score Range | Risk Level | Position Scale |
+|-------------|-----------|---------------|
+| ≥ 80 | EXTREME | 25% of normal |
+| ≥ 60 | HIGH | 50% of normal |
+| ≥ 40 | ELEVATED | 75% of normal |
+| < 40 | NORMAL | 100% of normal |
+
+**Risk Gateway Configuration:**
+```
+maxPositionPctOfPortfolio: 25%      maxNetExposure: 80%
+maxPositionLossPct: 2%              drawdownHaltPct: 10%
+varLimitPct: 5% (95% CI)           drawdownReducePct: 5%
+maxGrossExposure: 100%             maxCorrelation: 0.80
+minDiversificationRatio: 1.05      varConfidence: 0.95
+```
+
+## 6.10 Hard Limits & Guardrails (Layer 6)
+
+**Frozen Configuration (non-overridable via `Object.freeze()`):**
+
+| Limit | Value | Description |
+|-------|-------|-------------|
+| MAX_POSITION_SIZE_PCT | 10% | Per-position size ceiling |
+| MAX_DAILY_LOSS_PCT | 3% | Daily loss halt trigger |
+| MAX_PORTFOLIO_DRAWDOWN_PCT | 15% | Portfolio-wide halt trigger |
+| MAX_LEVERAGE | 2.0x | Gross exposure ceiling |
+| MAX_CORRELATED_EXPOSURE_PCT | 30% | Correlated asset concentration limit |
+| MAX_DAILY_INFERENCE_COST | $5.00 | Claude API daily budget |
+
+**Four-Tier Autonomy Model:**
+
+| Tier | Scope | Approval | Examples |
+|------|-------|----------|----------|
+| TIER_1_AUTONOMOUS | Research, backtesting | None required | Data fetch, signal generation |
+| TIER_2_SUPERVISED | Paper trading | Auto with audit log | Paper orders, promotions |
+| TIER_3_APPROVAL_REQUIRED | Live trading | Blocks until human approval | Capital deployment |
+| TIER_4_FORBIDDEN | Critical operations | Never allowed | Withdrawals, API key changes |
+
+**Kill Switch:** Irreversible within process. Flattens all positions, halts daemon, logs to audit trail, sends Telegram alerts. Requires daemon restart to clear. Persisted in `guardrail-state.json`.
+
+**Reduced Risk Mode:** When activated, all percentage limits are halved and all cooldown durations are doubled (e.g., MAX_POSITION_SIZE_PCT: 10% → 5%).
+
+## 6.11 Complete Risk Decision Pipeline
+
+```
+Trade request received
+  │
+  ├─ Step 1: Guardrails Check (trading-guardrails.mjs)
+  │   ├── Kill switch engaged? → BLOCK
+  │   ├── Autonomy tier → Check approval
+  │   ├── Position size vs 10% limit
+  │   ├── Daily loss vs 3% limit
+  │   ├── Portfolio drawdown vs 15% limit
+  │   ├── Leverage vs 2.0x limit
+  │   ├── Correlated exposure vs 30% limit
+  │   └── Inference budget vs $5.00 limit
+  │
+  ├─ Step 2: Risk Gateway Assessment (risk-gateway.mjs)
+  │   ├── Circuit breaker status
+  │   ├── Portfolio drawdown gate (10% halt)
+  │   ├── Critical risk alerts → Scale size
+  │   ├── Position concentration (25% limit)
+  │   ├── Gross exposure (100% limit)
+  │   ├── Per-position max loss (2% limit)
+  │   ├── Correlation warnings
+  │   ├── Composite risk score → Position scaling
+  │   └── Bayesian regime adjustment (if enabled)
+  │
+  ├─ Step 3: Execute at adjusted size
+  │
+  ├─ Step 4: Log to audit trail (5,000 entry FIFO)
+  │
+  └─ Step 5: Post-trade circuit breaker check
+      ├── Strategy cumulative return
+      ├── Consecutive loss count
+      ├── Agent keep rate
+      └── Portfolio drawdown update
+```
 
 ---
 
-## Section 7: Execution & Portfolio Management
+# Section 7: Execution & Portfolio Management
 
-*Section pending — agent still processing.*
+## 7.1 Paper Trading Engine (`trading/paper-trader.mjs`)
+
+The paper trading engine simulates order execution with realistic market behavior, serving as the primary execution venue for all strategies below LIVE lifecycle stage.
+
+**Order Types Supported:**
+- **Market orders:** Filled immediately at current price ± configurable slippage (default: 5 bps)
+- **Limit orders:** Filled when market price crosses the limit price, with partial fill simulation
+- **Stop orders:** Triggered when price breaches stop level, converted to market order with gap risk simulation
+- **Stop-limit orders:** Triggered at stop price, placed as limit order at limit price
+
+**Fill Simulation Model:**
+```
+fill_price = market_price × (1 + direction × slippage)
+slippage = base_slippage + volume_impact + spread_component
+
+base_slippage:    5 bps (configurable)
+volume_impact:    order_size / ADV × impact_coefficient (default: 0.1)
+spread_component: half_spread estimate based on asset liquidity tier
+```
+
+**Position Management:**
+The paper trader maintains a position book with real-time P&L computation:
+```
+unrealized_pnl = Σ (current_price_i - avg_entry_i) × quantity_i
+realized_pnl   = Σ (exit_price_i - entry_price_i) × closed_quantity_i
+total_pnl      = realized_pnl + unrealized_pnl
+```
+
+State is persisted to `agents/state/paper-positions.json` via atomic writes for crash recovery. On daemon restart, the paper trader reloads all open positions and validates them against current market prices.
+
+## 7.2 Smart Order Router (`trading/smart-order-router.mjs`)
+
+The smart order router (SOR) optimizes execution by selecting the best execution strategy based on order characteristics:
+
+**Routing Decision Tree:**
+```
+if order_size / ADV > 0.05:        → VWAP (large order, minimize impact)
+elif urgency == "high":            → Market order (immediate execution)
+elif spread > 10 bps:              → Limit order at mid (capture spread)
+elif volatility > 2x normal:      → TWAP (distribute over time windows)
+else:                              → Limit order at best bid/ask
+```
+
+**VWAP Execution Algorithm:**
+```
+For time bucket t in trading day:
+  target_pct_t = historical_volume_t / total_daily_volume
+  child_order_size_t = total_order_size × target_pct_t
+
+Execution quality: VWAP_slippage = (avg_fill - VWAP) / VWAP
+Target: |VWAP_slippage| < 5 bps
+```
+
+**TWAP Execution Algorithm:**
+```
+For N equally-spaced intervals:
+  child_order_size = total_order_size / N
+  Randomize timing within each interval by ±20% to reduce predictability
+```
+
+## 7.3 Transaction Cost Analysis (`trading/tca.mjs`)
+
+The TCA module decomposes execution costs into constituent components:
+
+**Cost Decomposition:**
+```
+Total cost = Explicit costs + Implicit costs + Opportunity cost
+
+Explicit:     commissions + exchange fees + regulatory fees
+Implicit:     spread cost + market impact + timing cost
+Opportunity:  cost of unexecuted portion (for partial fills)
+
+Spread cost:       half_spread × order_size
+Market impact:     σ × √(order_size / ADV) × impact_coefficient
+Timing cost:       |price_decision - price_execution| × quantity
+```
+
+**Implementation Shortfall Analysis:**
+```
+IS = (execution_price - decision_price) / decision_price × direction
+
+Decomposition:
+  Delay cost:  (arrival_price - decision_price) / decision_price
+  Trading cost: (execution_price - arrival_price) / arrival_price
+
+Quality benchmark: IS < 10 bps for liquid names, < 25 bps for illiquid
+```
+
+The TCA module produces per-trade reports and rolling aggregate statistics (daily, weekly, monthly) including: average implementation shortfall, VWAP performance, spread capture ratio, and market impact coefficient estimates. These feed back into the smart order router's calibration.
+
+## 7.4 Backtest Engine (`shared/backtest-engine.mjs`)
+
+The backtest engine provides event-driven simulation with configurable realism parameters:
+
+**Simulation Features:**
+- **Event-driven architecture:** Processes bars sequentially, calling strategy `onBar()` for each timestamp
+- **Transaction costs:** Configurable round-trip cost (default: 15 bps) deducted at trade execution
+- **Slippage model:** Configurable slippage (default: 5 bps) applied directionally to fill prices
+- **Position tracking:** Maintains running position with average entry price, computes per-bar P&L
+- **Margin/leverage:** Supports leveraged positions with configurable margin requirements
+
+**Performance Metrics Computed:**
+```
+Sharpe ratio:     (annualized_return - risk_free) / annualized_vol
+Sortino ratio:    (annualized_return - risk_free) / downside_vol
+Max drawdown:     max peak-to-trough decline
+Calmar ratio:     annualized_return / |max_drawdown|
+Win rate:         profitable_trades / total_trades
+Profit factor:    gross_profit / gross_loss
+Average trade:    total_pnl / total_trades
+```
+
+**Walk-Forward Integration:** The backtest engine integrates with the walk-forward optimizer (Section 9.4) by accepting parameterized strategy functions and returning standardized performance objects for cross-fold comparison.
+
+## 7.5 Position Reconciliation (`trading/reconciler.mjs`)
+
+The reconciler validates internal position state against the external broker (Alpaca paper trading API):
+
+**Reconciliation Process:**
+```
+1. Fetch broker positions via Alpaca API
+2. Fetch internal paper-trader positions
+3. Compare: symbol, quantity, side, market value
+4. Classify discrepancies:
+   - MISSING_INTERNAL:  broker has position, we don't → flag for investigation
+   - MISSING_BROKER:    we have position, broker doesn't → flag for investigation
+   - QUANTITY_MISMATCH: both have position, sizes differ → log delta
+   - PRICE_DRIFT:       market value differs > threshold → update marks
+5. Generate reconciliation report with break details
+6. Auto-correct: update internal marks to broker values for price drift
+```
+
+**Reconciliation Schedule:** Runs at daemon startup and every 4 hours (configurable). Critical breaks (missing positions, quantity mismatches > 10%) trigger immediate Telegram alerts.
+
+## 7.6 Portfolio Tracker (`shared/portfolio-tracker.mjs`)
+
+The portfolio tracker is an EventEmitter-based real-time position and exposure management system:
+
+**Events Emitted:**
+
+| Event | Trigger | Payload |
+|-------|---------|---------|
+| `trade` | Any trade execution | `{symbol, side, qty, price, timestamp}` |
+| `position:opened` | New position created | `{symbol, side, qty, entry_price}` |
+| `position:closed` | Position fully closed | `{symbol, pnl, duration, exit_reason}` |
+| `exposure:change` | Gross/net exposure shifts | `{gross_pct, net_pct, delta}` |
+| `drawdown:alert` | Drawdown exceeds threshold | `{current_dd, threshold, peak_equity}` |
+
+**State Management:**
+```
+Portfolio state = {
+  cash: number,
+  positions: Map<symbol, {qty, avgEntry, side, unrealizedPnl}>,
+  equity: number,           // cash + Σ position market values
+  peakEquity: number,       // high-water mark
+  dailyPnl: number,         // reset at 00:00 UTC
+  grossExposure: number,    // Σ |position_value_i| / equity
+  netExposure: number,      // Σ signed_position_value_i / equity
+}
+```
+
+State is persisted atomically to `agents/state/portfolio-state.json` after every trade event. On crash recovery, the tracker reloads the last persisted state and validates against broker positions via the reconciler.
+
+## 7.7 Performance Attribution (`management/performance-attribution.mjs`)
+
+The attribution module decomposes portfolio returns into actionable components:
+
+**Three-Level Decomposition:**
+
+1. **Strategy Attribution:** P&L contribution from each of the 27 strategies, computed as strategy_weight × strategy_return. Identifies which strategies are generating vs. destroying value.
+
+2. **Factor Attribution:** Using the 6-factor model (Section 6.2), decomposes returns into:
+```
+R_portfolio = α + β_MKT × R_MKT + β_SMB × R_SMB + β_HML × R_HML
+            + β_WML × R_WML + β_VMR × R_VMR + β_QMJ × R_QMJ + ε
+
+Factor contribution_j = β_j × R_j
+Alpha (skill) = R_portfolio - Σ factor_contributions
+```
+
+3. **Timing Attribution:** Measures whether strategy weight changes (rebalancing, signal changes) added or subtracted value versus a buy-and-hold of the prior allocation.
+
+**Benchmark Comparison:**
+The system tracks performance against configurable benchmarks (default: SPY for equity strategies, AGG for fixed income, 60/40 for balanced). Tracking error, information ratio, and active share are computed on rolling 63-day windows.
+
+## 7.8 Portfolio Dashboard (`management/portfolio-dashboard.mjs`)
+
+The dashboard aggregates all execution and portfolio metrics into a unified view:
+
+**Real-Time Metrics (30-second refresh):**
+- Portfolio equity, daily P&L, drawdown from peak
+- Per-strategy P&L and signal status
+- Gross/net exposure with limit proximity indicators
+- Risk score with component breakdown
+- Circuit breaker status (active breakers, cooldown remaining)
+- Inference cost budget (spent vs. remaining)
+
+**ASCII Chart Rendering:** The dashboard includes terminal-compatible ASCII charts for equity curves, drawdown profiles, and strategy performance heatmaps, enabling monitoring via SSH without GUI dependencies.
 
 ---
 
