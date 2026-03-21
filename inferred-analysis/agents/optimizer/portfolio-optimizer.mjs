@@ -411,9 +411,9 @@ export function optimizePortfolio(returnArrays, labels = null, options = {}) {
   for (const [method, data] of Object.entries(results)) {
     let w = data.weights;
 
-    // Apply position limits
-    w = applyPositionLimits(w, maxSinglePosition);
-    w = normalizeWeights(w, { targetSum: 1.0 });
+    // Apply position limits with iterative normalization
+    // Use normalizeWeights with maxWeight to enforce both sum and per-position limits simultaneously
+    w = normalizeWeights(w, { targetSum: 1.0, maxWeight: maxSinglePosition });
 
     // Apply sector constraints if provided
     if (sectors) {
@@ -429,9 +429,8 @@ export function optimizePortfolio(returnArrays, labels = null, options = {}) {
     // Validate final allocation
     const validation = validateAllocation(w, { maxSinglePosition });
     if (!validation.valid) {
-      // Force feasibility: re-apply limits and normalize
-      w = applyPositionLimits(w, maxSinglePosition);
-      w = normalizeWeights(w, { targetSum: 1.0 });
+      // Force feasibility: re-normalize with bounds
+      w = normalizeWeights(w, { targetSum: 1.0, maxWeight: maxSinglePosition });
     }
 
     data.weights = w;

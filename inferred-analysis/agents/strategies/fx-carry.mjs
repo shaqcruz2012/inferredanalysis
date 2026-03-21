@@ -142,8 +142,13 @@ function stddev(arr) {
  * @returns {{date: string, allocation: Object<string, number>, carryRank: string[]}[]}
  */
 export function fxCarryStrategy(rateHistories, yieldDifferentials, options = {}) {
-  const { topN = 3, rebalanceDays = 21, maxPosition = 0.35 } = options;
+  try {
   const pairs = Object.keys(rateHistories);
+  for (const pair of pairs) {
+    const v = validatePriceData(rateHistories[pair]);
+    if (!v.valid) { console.error(`[fxCarryStrategy] Invalid data for ${pair}: ${v.errors.join("; ")}`); return []; }
+  }
+  const { topN = 3, rebalanceDays = 21, maxPosition = 0.35 } = options;
   const minLen = Math.min(...pairs.map(p => rateHistories[p].length));
   const signals = [];
 
