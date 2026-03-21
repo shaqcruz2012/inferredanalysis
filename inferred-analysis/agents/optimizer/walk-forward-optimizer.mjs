@@ -14,12 +14,17 @@
  */
 
 import { generateRealisticPrices } from "../data/fetch.mjs";
+import { BOUNDS, clampSharpe, clampParam, validateAllocation } from "../shared/constraints.mjs";
 
 /**
  * Run a strategy with given parameters and return performance metrics.
  */
 function runStrategy(prices, params) {
-  const { fastMA = 10, slowMA = 50, stopLoss = 0.05 } = params;
+  const {
+    fastMA = 10,
+    slowMA = 50,
+    stopLoss = clampParam("positionSize", 0.05)
+  } = params;
   let position = 0;
   let entryPrice = 0;
   const returns = [];
@@ -53,7 +58,9 @@ function runStrategy(prices, params) {
 
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const std = Math.sqrt(returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1));
-  const sharpe = std > 0 ? (mean / std) * Math.sqrt(252) : 0;
+  const rawSharpe = std > 0 ? (mean / std) * Math.sqrt(252) : 0;
+  // Clamp Sharpe to reject overfitted parameter sets
+  const sharpe = clampSharpe(rawSharpe);
 
   let equity = 1, peak = 1, maxDD = 0;
   for (const r of returns) {

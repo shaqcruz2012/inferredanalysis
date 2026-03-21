@@ -463,6 +463,7 @@ async function main() {
   let discardCount = 0;
   let crashCount = 0;
   let bestContent = baselineContent;
+  let bestMutationName = "baseline";
 
   for (let i = 1; i <= opts.iterations; i++) {
     // Circuit breaker check before each experiment
@@ -474,13 +475,34 @@ async function main() {
       break;
     }
 
-    // Pick random mutation
-    const mutation = MUTATIONS[Math.floor(Math.random() * MUTATIONS.length)];
+    // Reload feedback periodically so new results inform mutation selection
+    if (i > 1 && (i - 1) % 5 === 0) {
+      feedback = loadFeedback(resultsPath);
+      console.log(`  [feedback] Reloaded: ${feedback.totalExperiments} experiments in history`);
+    }
+
+    // Use feedback to select mutation (weighted by past performance)
+    const recommendation = getRecommendedMutation(opts.agent, MUTATIONS, feedback);
+    const mutation = recommendation.mutation;
+
+    // Get parameter hints for the selected mutation
+    const hints = getParameterHints(opts.agent, mutation.name, feedback);
+
+    // Build lineage record (parent -> child)
+    const lineage = buildLineageRecord(
+      opts.agent, bestMutationName, mutation.name, bestSharpe, recommendation
+    );
+
     console.log(`─── Experiment ${i}/${opts.iterations}: ${mutation.name} ───`);
     console.log(`  ${mutation.description}`);
+    console.log(`  [feedback] Selection: ${recommendation.reason}`);
+    if (hints.hasData) {
+      console.log(`  [feedback] Param hints: lookbackBias=${hints.suggestedLookbackBias.toFixed(2)}, thresholdBias=${hints.suggestedThresholdBias.toFixed(2)}, confidence=${hints.confidence.toFixed(2)}`);
+    }
+    console.log(formatLineageLog(lineage));
 
-    // Apply mutation
-    applyMutation(stratPath, mutation);
+    // Apply mutation with feedback-driven parameter hints
+    applyMutation(stratPath, mutation, hints);
 
     // Run backtest
     const result = runBacktest(stratPath, opts.agent);
@@ -504,6 +526,7 @@ async function main() {
       console.log(`  KEEP — Sharpe: ${sharpe.toFixed(4)} (was ${bestSharpe.toFixed(4)}) | Return: ${(totalReturn * 100).toFixed(2)}%`);
       bestSharpe = sharpe;
       bestContent = readFileSync(stratPath, "utf-8");
+      bestMutationName = mutation.name;
       keepCount++;
       logResult(opts.agent, mutation.name, result.metrics, "keep");
     } else {

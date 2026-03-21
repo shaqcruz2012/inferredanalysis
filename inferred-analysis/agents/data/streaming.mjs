@@ -709,6 +709,290 @@ class WebSocketStub extends EventEmitter {
   }
 }
 
+// ─── Exponential Backoff Helper ─────────────────────────
+
+/**
+ * Compute exponential backoff delay with jitter.
+ *
+ * @param {number} attempt   - Current attempt number (0-based)
+ * @param {object} [opts]
+ * @param {number} opts.baseMs  - Base delay in ms (default: 1000)
+ * @param {number} opts.maxMs   - Maximum delay in ms (default: 60000)
+ * @param {number} opts.jitter  - Jitter factor 0-1 (default: 0.3)
+ * @returns {number} Delay in ms
+ */
+function exponentialBackoff(attempt, opts = {}) {
+  const baseMs = opts.baseMs ?? 1000;
+  const maxMs = opts.maxMs ?? 60_000;
+  const jitter = opts.jitter ?? 0.3;
+  const delay = Math.min(baseMs * Math.pow(2, attempt), maxMs);
+  const jitterMs = delay * jitter * (Math.random() * 2 - 1);
+  return Math.max(0, Math.round(delay + jitterMs));
+}
+
+// ─── Reconnecting WebSocket Client ──────────────────────
+
+/**
+ * WebSocket client wrapper with automatic reconnection using exponential backoff.
+ *
+ * Handles:
+ *   - Automatic reconnection on disconnect with exponential backoff
+ *   - Configurable max retries
+ *   - Connection state tracking
+ *   - Heartbeat/ping monitoring
+ *
+ * Events:
+ *   "connected"    — connection established
+ *   "disconnected" — connection lost
+ *   "reconnecting" — attempting reconnection { attempt, delayMs }
+ *   "message"      — data received
+ *   "error"        — connection error
+ *   "exhausted"    — max retries reached, giving up
+ *
+ * Usage:
+ *   const ws = new ReconnectingWebSocket('ws://localhost:8080', {
+ *     maxRetries: 10,
+ *     baseDelayMs: 1000,
+ *     maxDelayMs: 30000,
+ *   });
+ *   ws.on('message', (data) => console.log(data));
+ *   ws.connect();
+ */
+class ReconnectingWebSocket extends EventEmitter {
+  /**
+   * @param {string} url - WebSocket URL to connect to
+   * @param {object} [opts]
+   * @param {number} opts.maxRetries    - Max reconnection attempts (default: Infinity)
+   * @param {number} opts.baseDelayMs   - Base backoff delay (default: 1000)
+   * @param {number} opts.maxDelayMs    - Max backoff delay (default: 60000)
+   * @param {number} opts.jitter        - Backoff jitter factor (default: 0.3)
+   * @param {number} opts.pingIntervalMs - Heartbeat ping interval (default: 30000, 0 to disable)
+   * @param {number} opts.pongTimeoutMs  - Max wait for pong before considering dead (default: 10000)
+   */
+  constructor(url, opts = {}) {
+    super();
+    this.url = url;
+    this.maxRetries = opts.maxRetries ?? Infinity;
+    this.baseDelayMs = opts.baseDelayMs ?? 1000;
+    this.maxDelayMs = opts.maxDelayMs ?? 60_000;
+    this.jitter = opts.jitter ?? 0.3;
+    this.pingIntervalMs = opts.pingIntervalMs ?? 30_000;
+    this.pongTimeoutMs = opts.pongTimeoutMs ?? 10_000;
+
+    this._socket = null;
+    this._attempt = 0;
+    this._intentionallyClosed = false;
+    this._reconnectTimer = null;
+    this._pingTimer = null;
+    this._pongTimer = null;
+    this._connected = false;
+
+    // Stats
+    this._totalReconnects = 0;
+    this._totalMessages = 0;
+    this._connectedSince = null;
+  }
+
+  get connected() {
+    return this._connected;
+  }
+
+  get stats() {
+    return {
+      connected: this._connected,
+      attempt: this._attempt,
+      totalReconnects: this._totalReconnects,
+      totalMessages: this._totalMessages,
+      uptime: this._connectedSince ? Date.now() - this._connectedSince : 0,
+    };
+  }
+
+  /**
+   * Initiate connection. Safe to call multiple times.
+   */
+  connect() {
+    this._intentionallyClosed = false;
+    this._attempt = 0;
+    this._doConnect();
+  }
+
+  _doConnect() {
+    // This is a stub for the actual WebSocket connection.
+    // In production, this would use the 'ws' package or native WebSocket.
+    // Here we provide the reconnection framework that wraps any WebSocket implementation.
+    try {
+      // Simulate: in real usage, replace this with actual WebSocket creation
+      // e.g., this._socket = new WebSocket(this.url);
+      this._onOpen();
+    } catch (err) {
+      this._onError(err);
+    }
+  }
+
+  /**
+   * Attach an external WebSocket instance (for use with real ws library).
+   * Call this instead of connect() when you have your own socket.
+   *
+   * @param {object} socket - A WebSocket-compatible object with on/send/close
+   */
+  attach(socket) {
+    this._intentionallyClosed = false;
+    this._socket = socket;
+
+    socket.on?.('open', () => this._onOpen());
+    socket.on?.('close', (code, reason) => this._onClose(code, reason));
+    socket.on?.('error', (err) => this._onError(err));
+    socket.on?.('message', (data) => this._onMessage(data));
+    socket.on?.('pong', () => this._onPong());
+  }
+
+  _onOpen() {
+    this._connected = true;
+    this._attempt = 0;
+    this._connectedSince = Date.now();
+    this.emit('connected', { url: this.url, reconnects: this._totalReconnects });
+
+    // Start heartbeat
+    this._startPing();
+  }
+
+  _onClose(code, reason) {
+    this._connected = false;
+    this._stopPing();
+    this.emit('disconnected', { code, reason, url: this.url });
+
+    if (!this._intentionallyClosed) {
+      this._scheduleReconnect();
+    }
+  }
+
+  _onError(err) {
+    this.emit('error', err);
+    // Error often precedes close; if not connected, schedule reconnect
+    if (!this._connected && !this._intentionallyClosed) {
+      this._scheduleReconnect();
+    }
+  }
+
+  _onMessage(data) {
+    this._totalMessages++;
+    this.emit('message', data);
+  }
+
+  _onPong() {
+    if (this._pongTimer) {
+      clearTimeout(this._pongTimer);
+      this._pongTimer = null;
+    }
+  }
+
+  _scheduleReconnect() {
+    if (this._reconnectTimer) return; // Already scheduled
+    if (this._attempt >= this.maxRetries) {
+      this.emit('exhausted', {
+        attempts: this._attempt,
+        url: this.url,
+        message: `Max retries (${this.maxRetries}) reached. Giving up.`,
+      });
+      return;
+    }
+
+    const delayMs = exponentialBackoff(this._attempt, {
+      baseMs: this.baseDelayMs,
+      maxMs: this.maxDelayMs,
+      jitter: this.jitter,
+    });
+
+    this._attempt++;
+    this._totalReconnects++;
+
+    this.emit('reconnecting', {
+      attempt: this._attempt,
+      maxRetries: this.maxRetries,
+      delayMs,
+      url: this.url,
+    });
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this._doConnect();
+    }, delayMs);
+  }
+
+  _startPing() {
+    if (this.pingIntervalMs <= 0) return;
+    this._stopPing();
+
+    this._pingTimer = setInterval(() => {
+      if (this._socket?.ping) {
+        try {
+          this._socket.ping();
+          // Set pong timeout
+          this._pongTimer = setTimeout(() => {
+            // No pong received — connection is dead
+            console.warn(`  [ws] No pong received from ${this.url} within ${this.pongTimeoutMs}ms, reconnecting`);
+            this._socket?.terminate?.();
+            this._onClose(1006, 'pong timeout');
+          }, this.pongTimeoutMs);
+        } catch {
+          // Socket might be dead
+        }
+      }
+    }, this.pingIntervalMs);
+  }
+
+  _stopPing() {
+    if (this._pingTimer) {
+      clearInterval(this._pingTimer);
+      this._pingTimer = null;
+    }
+    if (this._pongTimer) {
+      clearTimeout(this._pongTimer);
+      this._pongTimer = null;
+    }
+  }
+
+  /**
+   * Send data through the WebSocket.
+   */
+  send(data) {
+    if (!this._connected || !this._socket) {
+      throw new Error('WebSocket not connected');
+    }
+    this._socket.send?.(typeof data === 'string' ? data : JSON.stringify(data));
+  }
+
+  /**
+   * Intentionally close the connection. Will not reconnect.
+   */
+  close() {
+    this._intentionallyClosed = true;
+    this._stopPing();
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    if (this._socket) {
+      this._socket.close?.();
+      this._socket.destroy?.();
+      this._socket = null;
+    }
+    this._connected = false;
+  }
+
+  /**
+   * Reset reconnection attempt counter (e.g., after a successful long-lived connection).
+   */
+  resetAttempts() {
+    this._attempt = 0;
+  }
+
+  destroy() {
+    this.close();
+    this.removeAllListeners();
+  }
+}
+
 // ─── Streaming Pipeline ─────────────────────────────────
 
 /**
@@ -996,4 +1280,6 @@ export {
   BackpressureController,
   SimulatedFeed,
   WebSocketStub,
+  ReconnectingWebSocket,
+  exponentialBackoff,
 };

@@ -40,6 +40,11 @@ class TopKTracker {
   }
 
   add(params, fitness, meta = {}) {
+    // Reject NaN/Infinity fitness values
+    if (!Number.isFinite(fitness)) return false;
+    // Clamp fitness to sane bounds
+    fitness = clampSharpe(fitness);
+
     const key = this.keyFn(params);
     if (this.seen.has(key)) return false;
     this.seen.add(key);
@@ -146,7 +151,8 @@ function defaultFitness(params, prices) {
   // Penalize excessive trading
   const tradePenalty = trades > 500 ? (trades - 500) * 0.001 : 0;
 
-  return sharpe - tradePenalty;
+  // Clamp Sharpe to detect overfitting (unrealistic values)
+  return clampSharpe(sharpe - tradePenalty);
 }
 
 // ─── Cartesian Product Helper ───────────────────────────

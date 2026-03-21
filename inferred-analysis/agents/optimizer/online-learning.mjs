@@ -19,6 +19,8 @@
  *   import { OnlineLearner, hedgeAlgorithm, ftrl, trackRegret } from './online-learning.mjs'
  */
 
+import { BOUNDS, clampParam, clampWeight, normalizeWeights } from "../shared/constraints.mjs";
+
 // ─── Utilities ──────────────────────────────────────────
 
 function softmax(arr) {
@@ -84,7 +86,7 @@ class OnlineGradientDescent {
   constructor(nWeights, options = {}) {
     this.n = nWeights;
     this.weights = new Array(nWeights).fill(1 / nWeights);
-    this.baseLR = options.learningRate || 0.1;
+    this.baseLR = clampParam("learningRate", options.learningRate || 0.1);
     this.t = 0;
     this.useSimplex = options.simplex !== false;
   }
@@ -97,8 +99,15 @@ class OnlineGradientDescent {
     this.t++;
     const lr = this.baseLR / Math.sqrt(this.t);
 
+    // Clamp gradient to prevent exploding updates (max gradient norm = 10)
+    const gradNorm = Math.sqrt(gradient.reduce((s, g) => s + g * g, 0));
+    const maxGradNorm = 10.0;
+    const gradScale = gradNorm > maxGradNorm ? maxGradNorm / gradNorm : 1.0;
+
     for (let i = 0; i < this.n; i++) {
-      this.weights[i] -= lr * gradient[i];
+      this.weights[i] -= lr * gradient[i] * gradScale;
+      // Bound individual weights to prevent divergence
+      this.weights[i] = clampWeight(this.weights[i], -2.0, 2.0);
     }
 
     if (this.useSimplex) {
@@ -142,9 +151,9 @@ class OnlineGradientDescent {
  * @returns {Object} Hedge instance with update(), predict(), getWeights()
  */
 export function hedgeAlgorithm(nExperts, options = {}) {
-  const eta = options.eta || Math.sqrt(Math.log(nExperts) / 100);
+  const eta = clampParam("learningRate", options.eta || Math.sqrt(Math.log(nExperts) / 100));
   let weights = options.initialWeights
-    ? [...options.initialWeights]
+    ? normalizeWeights([...options.initialWeights], { targetSum: 1.0, longOnly: true })
     : new Array(nExperts).fill(1 / nExperts);
   let cumulativeLoss = new Array(nExperts).fill(0);
   let round = 0;
@@ -183,8 +192,12 @@ export function hedgeAlgorithm(nExperts, options = {}) {
       round++;
 
       for (let i = 0; i < weights.length; i++) {
+        // Clamp individual losses to prevent overflow in exp
+        const clampedLoss = clamp(losses[i], -10, 10);
         cumulativeLoss[i] += losses[i];
-        weights[i] *= Math.exp(-eta * losses[i]);
+        weights[i] *= Math.exp(-eta * clampedLoss);
+        // Floor to prevent numerical underflow (weight death)
+        if (weights[i] < 1e-15) weights[i] = 1e-15;
       }
       _normalize();
 
@@ -241,10 +254,10 @@ export function hedgeAlgorithm(nExperts, options = {}) {
  * @returns {Object} FTRL instance with update(), predict(), getWeights()
  */
 export function ftrl(nFeatures, options = {}) {
-  const alpha = options.alpha || 1.0;           // learning rate scaling
-  const beta = options.beta || 1.0;             // smoothing parameter
-  const lambda1 = options.lambda1 || 0.1;       // L1 regularization (sparsity)
-  const lambda2 = options.lambda2 || 0.01;      // L2 regularization (stability)
+  const alpha = clampParam("learningRate", options.alpha || 1.0);  // learning rate scaling
+  const beta = Math.max(0, options.beta || 1.0);                   // smoothing parameter
+  const lambda1 = clampParam("regularization", options.lambda1 || 0.1);  // L1 regularization
+  const lambda2 = clampParam("regularization", options.lambda2 || 0.01); // L2 regularization
 
   // Per-coordinate accumulators
   const z = new Array(nFeatures).fill(0);       // sum of gradients - learning_rate * weight
@@ -260,8 +273,10 @@ export function ftrl(nFeatures, options = {}) {
         weights[i] = 0;
       } else {
         const sign = z[i] >= 0 ? 1 : -1;
-        const lr = 1 / ((beta + Math.sqrt(n[i])) / alpha + lambda2);
-        weights[i] = -lr * (z[i] - sign * lambda1);
+        const denom = (beta + Math.sqrt(n[i])) / alpha + lambda2;
+        // Guard against division by zero
+        const lr = denom > 1e-15 ? 1 / denom : 1.0;
+        weights[i] = clampWeight(-lr * (z[i] - sign * lambda1));
       }
     }
   }
@@ -304,8 +319,11 @@ export function ftrl(nFeatures, options = {}) {
     update(features, gradient) {
       round++;
 
+      // Clamp gradient to prevent exploding updates
+      const clampedGradient = clamp(gradient, -10, 10);
+
       for (let i = 0; i < nFeatures; i++) {
-        const gi = gradient * features[i];
+        const gi = clampedGradient * features[i];
         const sigma = (Math.sqrt(n[i] + gi * gi) - Math.sqrt(n[i])) / alpha;
         z[i] += gi - sigma * weights[i];
         n[i] += gi * gi;
@@ -439,8 +457,8 @@ export class OnlineLearner {
 
     // AdaGrad accumulators for adaptive learning rates
     this.adagradAccum = new Array(this.nExperts).fill(0);
-    this.adagradEpsilon = options.adagradEpsilon || 1e-8;
-    this.adagradBaseLR = options.adagradLR || 0.5;
+    this.adagradEpsilon = Math.max(1e-12, options.adagradEpsilon || 1e-8);
+    this.adagradBaseLR = clampParam("learningRate", options.adagradLR || 0.5);
 
     // State
     this.round = 0;

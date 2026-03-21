@@ -24,6 +24,7 @@ import { execSync, spawn } from "child_process";
 import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { isTradingHalted, isPortfolioHalted, getBreakerSummary, formatBreakerBlock } from "./risk/breaker-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -226,6 +227,20 @@ async function main() {
   log(`  Paperclip: ${opts.paperclipUrl}`);
   log(`  PID: ${process.pid}`);
   log(`  Mode: ${opts.once ? "single run" : "continuous"}`);
+
+  // Report circuit breaker status at startup
+  const breakerStatus = getBreakerSummary();
+  if (!breakerStatus.readable) {
+    log("  Circuit breakers: STATE FILE NOT READABLE — trading will be halted by default");
+  } else if (breakerStatus.activeBreakerCount > 0) {
+    log(`  Circuit breakers: ${breakerStatus.activeBreakerCount} active`);
+    for (const [key, b] of Object.entries(breakerStatus.breakers)) {
+      log(`    [${b.level?.toUpperCase() || "?"}] ${key}: ${b.reason} (scale: ${((b.currentScale || 0) * 100).toFixed(0)}%)`);
+    }
+  } else {
+    log("  Circuit breakers: all clear");
+  }
+
   log("═══════════════════════════════════════════════════");
 
   let cycleCount = 0;
@@ -243,11 +258,40 @@ async function main() {
       log("Paperclip: not reachable (running standalone)");
     }
 
+    // Circuit breaker check — halt entire daemon cycle if portfolio breaker is active
+    const portfolioCheck = isPortfolioHalted();
+    if (portfolioCheck.halted) {
+      log(formatBreakerBlock("daemon cycle", portfolioCheck));
+      log(`CIRCUIT BREAKER: Portfolio halted — skipping all agent cycles`);
+      log(`Reason: ${portfolioCheck.reason}`);
+      // Still sleep and retry next cycle — breaker may clear
+      if (opts.once) {
+        log("Single-run mode — exiting (portfolio halted)");
+        break;
+      }
+      const elapsed = (Date.now() - cycleStart) / 1000;
+      const sleepTime = Math.max(10, opts.interval - elapsed);
+      log(`Sleeping ${sleepTime.toFixed(0)}s until next cycle (portfolio halted)...`);
+      await new Promise(resolve => setTimeout(resolve, sleepTime * 1000));
+      continue;
+    }
+
     // Rotate through agents — run one per cycle to spread work
     const agentIndex = (cycleCount - 1) % RESEARCH_AGENTS.length;
     const agent = RESEARCH_AGENTS[agentIndex];
 
-    runAgentCycle(agent, opts.iterations, opts.paperclipUrl);
+    // Circuit breaker check — skip this agent if its breaker is tripped
+    const agentBreaker = isTradingHalted(agent);
+    if (agentBreaker.halted) {
+      log(formatBreakerBlock(`daemon agent ${agent}`, agentBreaker));
+      log(`CIRCUIT BREAKER: Agent ${agent} halted — skipping to next cycle`);
+      log(`Reason: ${agentBreaker.reason}`);
+    } else {
+      if (agentBreaker.positionScale < 1.0) {
+        log(`Circuit breaker: Agent ${agent} in recovery mode (scale: ${(agentBreaker.positionScale * 100).toFixed(0)}%)`);
+      }
+      runAgentCycle(agent, opts.iterations, opts.paperclipUrl);
+    }
 
     // Send notification report every full rotation (after all 7 agents have run)
     if (cycleCount % RESEARCH_AGENTS.length === 0) {

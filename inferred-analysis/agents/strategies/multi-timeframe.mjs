@@ -317,112 +317,13 @@ function alignSignals(dailyBars, timeframes, strategy) {
   return aligned;
 }
 
-// ─── Backtest Engine ─────────────────────────────────────
+// ─── Backtest Engine (shared module) ─────────────────────
 
-function runBacktest(signals, config) {
-  let capital = config.initialCapital;
-  let position = 0;
-  let trades = 0;
-  const equityCurve = [];
-  let peakEquity = capital;
-  let maxDrawdown = 0;
-  const dailyReturns = [];
-  let prevEquity = capital;
-  let wins = 0;
-  let losses = 0;
-
-  for (const sig of signals) {
-    const targetPosition = sig.signal;
-    const currentPosition = position > 0 ? 1 : position < 0 ? -1 : 0;
-
-    if (targetPosition !== currentPosition) {
-      // Close existing position
-      if (position !== 0) {
-        const proceeds = position * sig.price;
-        const costBps = (config.transactionCostBps + config.slippageBps) / 10000;
-        const cost = Math.abs(proceeds) * costBps;
-        const pnl = proceeds - cost - Math.abs(position * (equityCurve.length > 0
-          ? equityCurve[equityCurve.length - 1].entryPrice || sig.price
-          : sig.price));
-        capital += proceeds - cost;
-        position = 0;
-        trades++;
-      }
-
-      // Open new position
-      if (targetPosition !== 0) {
-        const sizeMultiplier = sig.confidence !== undefined ? sig.confidence : 1.0;
-        const tradeCapital = capital * config.positionSize * sizeMultiplier;
-        const costBps = (config.transactionCostBps + config.slippageBps) / 10000;
-        const cost = tradeCapital * costBps;
-        position = (targetPosition * (tradeCapital - cost)) / sig.price;
-        capital -= tradeCapital;
-        trades++;
-      }
-    }
-
-    // Mark to market
-    const equity = capital + position * sig.price;
-    equityCurve.push({ date: sig.date, equity, entryPrice: sig.price });
-
-    // Daily returns
-    const dailyReturn = (equity - prevEquity) / prevEquity;
-    dailyReturns.push(dailyReturn);
-    if (dailyReturn > 0) wins++;
-    if (dailyReturn < 0) losses++;
-    prevEquity = equity;
-
-    // Drawdown
-    if (equity > peakEquity) peakEquity = equity;
-    const drawdown = (peakEquity - equity) / peakEquity;
-    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
-  }
-
-  // Close final position
-  if (position !== 0 && signals.length > 0) {
-    const lastPrice = signals[signals.length - 1].price;
-    capital += position * lastPrice;
-    position = 0;
-  }
-
-  return computeMetrics(capital, dailyReturns, maxDrawdown, trades, wins, losses, config);
-}
-
-function computeMetrics(finalCapital, dailyReturns, maxDrawdown, trades, wins, losses, config) {
-  const n = dailyReturns.length;
-  if (n === 0) return null;
-
-  const totalReturn = (finalCapital - config.initialCapital) / config.initialCapital;
-  const annualizedReturn = Math.pow(1 + totalReturn, 252 / n) - 1;
-
-  const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / n;
-  const variance = dailyReturns.reduce((sum, r) => sum + (r - meanReturn) ** 2, 0) / (n - 1);
-  const stdDev = Math.sqrt(variance);
-  const sharpe = stdDev > 0 ? (meanReturn / stdDev) * Math.sqrt(252) : 0;
-
-  const downsideReturns = dailyReturns.filter(r => r < 0);
-  const downsideVariance = downsideReturns.length > 0
-    ? downsideReturns.reduce((sum, r) => sum + r ** 2, 0) / downsideReturns.length
-    : 0;
-  const downsideDev = Math.sqrt(downsideVariance);
-  const sortino = downsideDev > 0 ? (meanReturn / downsideDev) * Math.sqrt(252) : 0;
-
-  const calmar = maxDrawdown > 0 ? annualizedReturn / maxDrawdown : 0;
-  const winRate = n > 0 ? wins / n : 0;
-
-  return {
-    total_return: totalReturn,
-    annualized_return: annualizedReturn,
-    sharpe,
-    sortino,
-    calmar,
-    max_drawdown: maxDrawdown,
-    win_rate: winRate,
-    trades,
-    days: n,
-    final_capital: finalCapital,
-  };
-}
+import {
+  runBacktest,
+  computeMetrics,
+  computeDrawdown,
+} from "../shared/backtest-engine.mjs";
 
 // ─── Single-Timeframe Baseline ───────────────────────────
 

@@ -21,6 +21,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } fr
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
+import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -576,6 +577,63 @@ async function runPaperTrading(opts) {
     console.log(`\n  SAFETY BLOCK: ${safetyResult.reason}`);
     console.log("  Skipping trade. Consider --flatten if needed.");
     return;
+  }
+
+  // 5b. Risk gateway assessment — aggregate risk check before any execution
+  if (latestSignal.signal !== 0) {
+    const portfolioPositions = positions.map(p => ({
+      symbol: p.symbol,
+      qty: parseFloat(p.qty),
+      value: Math.abs(parseFloat(p.qty)) * parseFloat(p.current_price),
+      unrealizedPnl: parseFloat(p.unrealized_pl),
+    }));
+    const positionFractionPrelim = config.positionSize || 0.10;
+    const estimatedPricePrelim = latestSignal.price;
+    const prelimQty = Math.floor(Math.min(equity * positionFractionPrelim, SAFETY.maxPositionSize) / estimatedPricePrelim);
+
+    const riskAssessment = assessTradeRisk(
+      {
+        symbol,
+        side: latestSignal.signal === 1 ? "buy" : "sell",
+        qty: prelimQty,
+        price: estimatedPricePrelim,
+        agent: agentRole,
+        positionSize: positionFractionPrelim,
+      },
+      {
+        equity,
+        cash: parseFloat(account.cash || account.buying_power || 0),
+        positions: portfolioPositions,
+        dailyPnl: equity - parseFloat(account.last_equity || equity),
+      }
+    );
+
+    console.log(`\n  Risk Gateway Assessment:`);
+    console.log(`    Allowed:       ${riskAssessment.allowed}`);
+    console.log(`    Risk Score:    ${riskAssessment.riskScore}/100`);
+    console.log(`    Adjusted Size: ${riskAssessment.adjustedSize} (requested: ${prelimQty})`);
+    if (riskAssessment.reason !== "All risk checks passed") {
+      console.log(`    Reason:        ${riskAssessment.reason}`);
+    }
+
+    if (!riskAssessment.allowed) {
+      console.log(`\n  RISK GATEWAY BLOCK: ${riskAssessment.reason}`);
+      console.log("  Trade rejected by risk framework. No order placed.");
+      logTrade({
+        agent: agentRole,
+        symbol,
+        side: latestSignal.signal === 1 ? "buy" : "sell",
+        qty: prelimQty,
+        price: estimatedPricePrelim,
+        order_id: "risk_blocked",
+        status: `blocked: ${riskAssessment.reason.slice(0, 80)}`,
+        equity_before: equity,
+        equity_after: equity,
+        daily_pnl: 0,
+        signal_source: `${agentRole}:risk_score=${riskAssessment.riskScore}`,
+      });
+      return;
+    }
   }
 
   // 6. Execute trades

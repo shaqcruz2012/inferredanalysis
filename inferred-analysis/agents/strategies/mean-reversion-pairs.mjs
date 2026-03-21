@@ -74,28 +74,40 @@ export function adfStat(series) {
  * Returns { cointegrated, hedgeRatio, adf, halfLife }
  */
 export function testCointegration(pricesA, pricesB, significance = -2.86) {
-  const closesA = pricesA.map(p => p.close);
-  const closesB = pricesB.map(p => p.close);
-  const n = Math.min(closesA.length, closesB.length);
+  try {
+    const validA = validatePriceData(pricesA);
+    const validB = validatePriceData(pricesB);
+    if (!validA.valid || !validB.valid) {
+      console.error("[testCointegration] Invalid price data");
+      return { cointegrated: false, hedgeRatio: 0, alpha: 0, adf: 0, halfLife: Infinity, spreadMean: 0, spreadStd: 0 };
+    }
 
-  const reg = ols(closesA.slice(0, n), closesB.slice(0, n));
-  const adf = adfStat(reg.residuals);
+    const closesA = pricesA.map(p => p.close);
+    const closesB = pricesB.map(p => p.close);
+    const n = Math.min(closesA.length, closesB.length);
 
-  // Half-life of mean reversion (Ornstein-Uhlenbeck)
-  const spreadLag = reg.residuals.slice(0, -1);
-  const spreadDiff = reg.residuals.slice(1).map((r, i) => r - spreadLag[i]);
-  const hlReg = ols(spreadDiff, spreadLag);
-  const halfLife = hlReg.beta < 0 ? -Math.log(2) / hlReg.beta : Infinity;
+    const reg = ols(closesA.slice(0, n), closesB.slice(0, n));
+    const adf = adfStat(reg.residuals);
 
-  return {
-    cointegrated: adf < significance,
-    hedgeRatio: reg.beta,
-    alpha: reg.alpha,
-    adf,
-    halfLife,
-    spreadMean: reg.residuals.reduce((a, b) => a + b, 0) / reg.residuals.length,
-    spreadStd: Math.sqrt(reg.residuals.reduce((s, r) => s + r * r, 0) / reg.residuals.length),
-  };
+    // Half-life of mean reversion (Ornstein-Uhlenbeck)
+    const spreadLag = reg.residuals.slice(0, -1);
+    const spreadDiff = reg.residuals.slice(1).map((r, i) => r - spreadLag[i]);
+    const hlReg = ols(spreadDiff, spreadLag);
+    const halfLife = hlReg.beta < 0 ? -Math.log(2) / hlReg.beta : Infinity;
+
+    return {
+      cointegrated: adf < significance,
+      hedgeRatio: reg.beta,
+      alpha: reg.alpha,
+      adf,
+      halfLife,
+      spreadMean: safeMean(reg.residuals),
+      spreadStd: safeStd(reg.residuals),
+    };
+  } catch (err) {
+    console.error(`[testCointegration] Failed: ${err.message}`);
+    return { cointegrated: false, hedgeRatio: 0, alpha: 0, adf: 0, halfLife: Infinity, spreadMean: 0, spreadStd: 0 };
+  }
 }
 
 /**

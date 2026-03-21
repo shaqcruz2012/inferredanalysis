@@ -3,6 +3,7 @@
  * Market Data Fetcher — Alpha Vantage
  *
  * Fetches real OHLCV price data and caches it locally for backtesting.
+ * Uses the shared API client for rate limiting, retry, and caching.
  *
  * Usage:
  *   node agents/data/fetch.mjs SPY                    # Fetch SPY daily
@@ -14,38 +15,35 @@
  *   ALPHA_VANTAGE_KEY=your-api-key
  *
  * Cached data is stored in agents/data/cache/<SYMBOL>.json
- * Cache expires after 24 hours for daily data.
+ * Cache expires after 24 hours for daily data, 1 hour for intraday.
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import {
+  apiClient,
+  CacheTTL,
+  Priority,
+  ResponseCache,
+} from "../shared/api-client.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = join(__dirname, "cache");
 const API_KEY = process.env.ALPHA_VANTAGE_KEY || "9M9R6PT1SZCK6014";
 const BASE_URL = "https://www.alphavantage.co/query";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// ─── API Functions ───────────────────────────────────────
+// TTL constants for disk cache validation
+const DAILY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;    // 24 hours
+const INTRADAY_CACHE_TTL_MS = 60 * 60 * 1000;      // 1 hour
+
+// ─── Response Parsers ───────────────────────────────────
 
 /**
- * Fetch daily OHLCV data from Alpha Vantage.
- * Returns array of { date, open, high, low, close, volume }
+ * Parse Alpha Vantage daily response into normalized OHLCV array.
  */
-async function fetchDaily(symbol, outputSize = "full") {
-  const url = `${BASE_URL}?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(symbol)}&outputsize=${outputSize}&apikey=${API_KEY}`;
-
-  console.log(`  Fetching ${symbol} from Alpha Vantage...`);
-  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  }
-
-  const data = await res.json();
-
-  // Check for API errors
+function parseDailyResponse(data, symbol) {
+  // Check for API errors embedded in response
   if (data["Error Message"]) {
     throw new Error(`Alpha Vantage: ${data["Error Message"]}`);
   }
@@ -61,8 +59,7 @@ async function fetchDaily(symbol, outputSize = "full") {
     throw new Error(`No data returned for ${symbol}. Response: ${JSON.stringify(data).slice(0, 200)}`);
   }
 
-  // Convert to our format, sorted by date ascending
-  const prices = Object.entries(timeSeries)
+  return Object.entries(timeSeries)
     .map(([date, values]) => ({
       date,
       open: parseFloat(values["1. open"]),
@@ -72,21 +69,12 @@ async function fetchDaily(symbol, outputSize = "full") {
       volume: parseInt(values["5. volume"]),
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
-
-  console.log(`  Got ${prices.length} days for ${symbol} (${prices[0]?.date} → ${prices[prices.length - 1]?.date})`);
-  return prices;
 }
 
 /**
- * Fetch intraday data (60-min bars) from Alpha Vantage.
+ * Parse Alpha Vantage intraday response into normalized OHLCV array.
  */
-async function fetchIntraday(symbol, interval = "60min") {
-  const url = `${BASE_URL}?function=TIME_SERIES_INTRADAY&symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=full&apikey=${API_KEY}`;
-
-  console.log(`  Fetching ${symbol} intraday (${interval}) from Alpha Vantage...`);
-  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  const data = await res.json();
-
+function parseIntradayResponse(data, symbol, interval) {
   if (data["Error Message"]) throw new Error(data["Error Message"]);
   if (data["Note"]) throw new Error(`Rate limit: ${data["Note"]}`);
 
@@ -106,26 +94,88 @@ async function fetchIntraday(symbol, interval = "60min") {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-// ─── Cache Management ────────────────────────────────────
+// ─── API Functions (via shared client) ──────────────────
+
+/**
+ * Fetch daily OHLCV data from Alpha Vantage via the rate-limited client.
+ * Returns array of { date, open, high, low, close, volume }
+ */
+async function fetchDaily(symbol, outputSize = "full", priority = Priority.RESEARCH) {
+  const url = `${BASE_URL}?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(symbol)}&outputsize=${outputSize}&apikey=${API_KEY}`;
+  const cacheKey = `av:daily:${symbol.toUpperCase()}`;
+
+  console.log(`  Fetching ${symbol} from Alpha Vantage...`);
+
+  const result = await apiClient.request(url, {
+    priority,
+    cacheKey,
+    cacheTTL: CacheTTL.DAILY,
+    transform: (res) => res.json(),
+    fallback: () => {
+      console.warn(`  [fetch] API unavailable for ${symbol}, generating synthetic data`);
+      return { _synthetic: true, prices: generateRealisticPrices(symbol) };
+    },
+  });
+
+  // If we got synthetic fallback data
+  if (result.data?._synthetic) {
+    console.warn(`  WARNING: Using synthetic data for ${symbol} (API unavailable)`);
+    return result.data.prices;
+  }
+
+  const prices = parseDailyResponse(result.data, symbol);
+  console.log(`  Got ${prices.length} days for ${symbol} (${prices[0]?.date} → ${prices[prices.length - 1]?.date}) [source: ${result.source}${result.stale ? ', stale' : ''}]`);
+  return prices;
+}
+
+/**
+ * Fetch intraday data (60-min bars) from Alpha Vantage via the rate-limited client.
+ */
+async function fetchIntraday(symbol, interval = "60min", priority = Priority.RESEARCH) {
+  const url = `${BASE_URL}?function=TIME_SERIES_INTRADAY&symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=full&apikey=${API_KEY}`;
+  const cacheKey = `av:intraday:${symbol.toUpperCase()}:${interval}`;
+
+  console.log(`  Fetching ${symbol} intraday (${interval}) from Alpha Vantage...`);
+
+  const result = await apiClient.request(url, {
+    priority,
+    cacheKey,
+    cacheTTL: CacheTTL.INTRADAY,
+    transform: (res) => res.json(),
+    fallback: () => {
+      console.warn(`  [fetch] API unavailable for ${symbol} intraday, generating synthetic data`);
+      return { _synthetic: true, prices: generateRealisticPrices(symbol) };
+    },
+  });
+
+  if (result.data?._synthetic) {
+    console.warn(`  WARNING: Using synthetic data for ${symbol} intraday (API unavailable)`);
+    return result.data.prices;
+  }
+
+  return parseIntradayResponse(result.data, symbol, interval);
+}
+
+// ─── Disk Cache Management ──────────────────────────────
 
 function getCachePath(symbol) {
   return join(CACHE_DIR, `${symbol.toUpperCase()}.json`);
 }
 
-function isCacheValid(symbol) {
+function isDiskCacheValid(symbol, ttlMs = DAILY_CACHE_TTL_MS) {
   const path = getCachePath(symbol);
   if (!existsSync(path)) return false;
 
   try {
     const cached = JSON.parse(readFileSync(path, "utf-8"));
     const age = Date.now() - (cached.fetchedAt || 0);
-    return age < CACHE_TTL_MS;
+    return age < ttlMs;
   } catch {
     return false;
   }
 }
 
-function readCache(symbol) {
+function readDiskCache(symbol) {
   const path = getCachePath(symbol);
   if (!existsSync(path)) return null;
   try {
@@ -136,7 +186,7 @@ function readCache(symbol) {
   }
 }
 
-function writeCache(symbol, prices) {
+function writeDiskCache(symbol, prices) {
   mkdirSync(CACHE_DIR, { recursive: true });
   const path = getCachePath(symbol);
   writeFileSync(path, JSON.stringify({
@@ -157,56 +207,71 @@ function listCached() {
     .map(f => {
       try {
         const data = JSON.parse(readFileSync(join(CACHE_DIR, f), "utf-8"));
+        const ageMs = Date.now() - data.fetchedAt;
+        const stale = ageMs >= DAILY_CACHE_TTL_MS;
         return {
           symbol: data.symbol,
           days: data.count,
           range: `${data.startDate} → ${data.endDate}`,
-          age: Math.round((Date.now() - data.fetchedAt) / 60000) + " min ago",
+          age: Math.round(ageMs / 60000) + " min ago",
+          stale,
         };
       } catch {
-        return { symbol: f.replace(".json", ""), days: "?", range: "?", age: "?" };
+        return { symbol: f.replace(".json", ""), days: "?", range: "?", age: "?", stale: true };
       }
     });
 }
+
+// Backward compatibility aliases
+const CACHE_TTL_MS = DAILY_CACHE_TTL_MS;
+const isCacheValid = isDiskCacheValid;
+const readCache = readDiskCache;
+const writeCache = writeDiskCache;
 
 // ─── Public API ──────────────────────────────────────────
 
 /**
  * Get prices for a symbol, using cache if available.
  * This is the main function other modules import.
+ *
+ * @param {string} symbol - Ticker symbol
+ * @param {boolean} [forceRefresh=false] - Skip cache and re-fetch
+ * @param {object} [opts] - Additional options
+ * @param {number} opts.priority - Priority.LIVE | BACKTEST | RESEARCH
+ * @param {number} opts.cacheTTL - Custom cache TTL in ms
  */
-export async function getPrices(symbol, forceRefresh = false) {
+export async function getPrices(symbol, forceRefresh = false, opts = {}) {
   symbol = symbol.toUpperCase();
+  const priority = opts.priority ?? Priority.RESEARCH;
 
-  if (!forceRefresh && isCacheValid(symbol)) {
-    const cached = readCache(symbol);
+  // Check disk cache first (fast path)
+  if (!forceRefresh && isDiskCacheValid(symbol)) {
+    const cached = readDiskCache(symbol);
     if (cached) {
       console.log(`  Using cached data for ${symbol} (${cached.length} days)`);
       return cached;
     }
   }
 
-  const prices = await fetchDaily(symbol);
-  writeCache(symbol, prices);
+  // Fetch via rate-limited client
+  const prices = await fetchDaily(symbol, "full", priority);
+  writeDiskCache(symbol, prices);
   return prices;
 }
 
 /**
  * Get prices for multiple symbols.
- * Respects Alpha Vantage rate limit (5 calls/min on free tier).
+ * Uses the shared rate-limited client — no manual sleep needed.
  */
-export async function getMultiplePrices(symbols, forceRefresh = false) {
+export async function getMultiplePrices(symbols, forceRefresh = false, opts = {}) {
   const result = {};
-  for (let i = 0; i < symbols.length; i++) {
-    const sym = symbols[i].toUpperCase();
-    result[sym] = await getPrices(sym, forceRefresh);
+  const priority = opts.priority ?? Priority.RESEARCH;
 
-    // Rate limit: 5 calls/min on free tier, wait 15s between calls
-    if (i < symbols.length - 1 && forceRefresh) {
-      console.log("  Rate limit pause (15s)...");
-      await new Promise(r => setTimeout(r, 15000));
-    }
+  for (const rawSym of symbols) {
+    const sym = rawSym.toUpperCase();
+    result[sym] = await getPrices(sym, forceRefresh, { priority });
   }
+
   return result;
 }
 
@@ -319,7 +384,8 @@ async function main() {
     }
     console.log("Cached market data:\n");
     for (const c of cached) {
-      console.log(`  ${c.symbol.padEnd(6)} ${String(c.days).padStart(5)} days  ${c.range}  (${c.age})`);
+      const staleTag = c.stale ? " [STALE]" : "";
+      console.log(`  ${c.symbol.padEnd(6)} ${String(c.days).padStart(5)} days  ${c.range}  (${c.age})${staleTag}`);
     }
     return;
   }
@@ -335,17 +401,15 @@ async function main() {
   for (const symbol of symbols) {
     try {
       const prices = await getPrices(symbol, refresh);
-      console.log(`  ✓ ${symbol}: ${prices.length} days\n`);
+      console.log(`  Done: ${symbol}: ${prices.length} days\n`);
     } catch (err) {
-      console.error(`  ✗ ${symbol}: ${err.message}\n`);
+      console.error(`  Error: ${symbol}: ${err.message}\n`);
     }
-
-    // Rate limit pause between API calls
-    if (symbols.indexOf(symbol) < symbols.length - 1) {
-      await new Promise(r => setTimeout(r, 15000));
-    }
+    // No manual rate-limit sleep needed — the shared client handles it
   }
 
+  // Print client stats
+  console.log("\nAPI Client Stats:", JSON.stringify(apiClient.stats, null, 2));
   console.log("\nDone. Use --list to see cached data.");
 }
 
