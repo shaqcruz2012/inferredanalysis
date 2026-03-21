@@ -205,6 +205,16 @@ export function recordRetrievalFeedback(feedback: RetrievalFeedback): void {
     retrievalPrecision,
     rollingPrecision,
   });
+
+  // Prevent unbounded growth — keep only the most recent 1000 entries
+  if (feedbackByTurn.size > 1000) {
+    const iter = feedbackByTurn.keys();
+    const toDelete = feedbackByTurn.size - 1000;
+    for (let i = 0; i < toDelete; i++) {
+      const key = iter.next().value;
+      if (key !== undefined) feedbackByTurn.delete(key);
+    }
+  }
 }
 
 export class EnhancedRetriever extends MemoryRetriever {
@@ -631,16 +641,11 @@ function incrementKnowledgeAccessCount(db: Database, ids: string[]): void {
   const uniqueIds = dedupeStrings(ids);
   if (uniqueIds.length === 0) return;
 
-  const updateStatement = db.prepare(
-    "UPDATE knowledge_store SET access_count = access_count + 1 WHERE id = ?",
-  );
-
-  const tx = db.transaction((txIds: string[]) => {
-    for (const id of txIds) {
-      updateStatement.run(id);
-    }
-  });
-  tx(uniqueIds);
+  // Bulk update in a single query instead of N individual statements
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  db.prepare(
+    `UPDATE knowledge_store SET access_count = access_count + 1 WHERE id IN (${placeholders})`,
+  ).run(...uniqueIds);
 }
 
 function getTurnResponse(db: Database, turnId: string): string {

@@ -119,6 +119,17 @@ export class AlertEngine {
     const now = Date.now();
     const fired: AlertEvent[] = [];
 
+    // Prune stale cooldown entries older than 24h to prevent unbounded growth
+    const PRUNE_AGE_MS = 24 * 60 * 60 * 1000;
+    for (const [name, timestamp] of this.lastFired) {
+      if (now - timestamp > PRUNE_AGE_MS) this.lastFired.delete(name);
+    }
+
+    // Prune active alerts older than 24h
+    this.activeAlerts = this.activeAlerts.filter(
+      (a) => now - new Date(a.firedAt).getTime() < PRUNE_AGE_MS,
+    );
+
     for (const rule of this.rules) {
       try {
         const lastTime = this.lastFired.get(rule.name) ?? 0;

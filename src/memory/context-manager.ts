@@ -119,9 +119,12 @@ interface RenderedTurn extends RenderedBundle {
 
 function enforceLruLimit(cache: Map<string, number>): void {
   if (cache.size <= MAX_TOKEN_CACHE_SIZE) return;
-  const oldestKey = cache.keys().next().value;
-  if (oldestKey !== undefined) {
-    cache.delete(oldestKey);
+  // Batch evict 20% of entries to reduce per-call overhead
+  const evictCount = Math.ceil(cache.size * 0.2);
+  const iter = cache.keys();
+  for (let i = 0; i < evictCount; i++) {
+    const key = iter.next().value;
+    if (key !== undefined) cache.delete(key);
   }
 }
 
