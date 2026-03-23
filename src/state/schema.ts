@@ -677,3 +677,15 @@ export const MIGRATION_V10 = `
   CREATE INDEX idx_knowledge_category ON knowledge_store(category);
   CREATE INDEX idx_knowledge_key ON knowledge_store(key);
 `;
+
+// ─── V11: Performance indexes ─────────────────────────────────────
+// - event_stream compaction: covers WHERE created_at < ? AND compacted_to IS NULL
+// - knowledge_store access: covers ORDER BY access_count for retrieval scoring
+export const MIGRATION_V11 = `
+  CREATE INDEX IF NOT EXISTS idx_events_compaction
+    ON event_stream(created_at)
+    WHERE compacted_to IS NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_knowledge_access
+    ON knowledge_store(category, access_count);
+`;

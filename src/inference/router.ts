@@ -371,17 +371,17 @@ export class InferenceRouter {
     for (const msg of messages) {
       const last = result[result.length - 1];
       if (last && last.role === msg.role && msg.role !== "system" && msg.role !== "tool") {
-        // Replace last element with a new merged object (immutable)
+        // Merge into previous — only shallow-copy the envelope; share tool_call refs
         result[result.length - 1] = {
           ...last,
           content: (last.content || "") + "\n" + (msg.content || ""),
           tool_calls: msg.tool_calls
-            ? [...(last.tool_calls || []), ...msg.tool_calls.map(tc => ({ ...tc }))]
+            ? [...(last.tool_calls || []), ...msg.tool_calls]
             : last.tool_calls,
         };
         continue;
       }
-      result.push({ ...msg, tool_calls: msg.tool_calls?.map(tc => ({ ...tc })) });
+      result.push(msg);
     }
 
     return result;
