@@ -49,6 +49,18 @@ vi.mock("../social/twitter.js", () => ({
   createTwitterClient: vi.fn(() => mockTwitterClient),
 }));
 
+// Mock URL validation so test URLs don't throw
+vi.mock("../social/validation.js", () => ({
+  validateRelayUrl: vi.fn(),
+}));
+
+// Mock signing module used by signed relay fallback
+vi.mock("../social/signing.js", () => ({
+  signSendPayload: vi.fn().mockReturnValue("mock-signature"),
+  signPollPayload: vi.fn().mockReturnValue("mock-poll-signature"),
+  MESSAGE_LIMITS: { maxOutboundPerHour: 100 },
+}));
+
 import { createSocialClient } from "../social/client.js";
 
 // Fake account for the factory signature
@@ -121,25 +133,37 @@ describe("createSocialClient", () => {
     process.env.TWITTER_API_KEY = "tw-api-key";
     // TWITTER_USERNAME intentionally not set
 
+    // Mock fetch for the signed relay fallback
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "relay-msg" }),
+    }));
+
     const client = createSocialClient("http://relay", fakeAccount);
 
-    // Should fall through to no-op
+    // Should fall through to signed relay (not Telegram/Twitter)
     const result = await client.send("@someone", "tweet");
-    expect(result).toEqual({ id: "noop" });
+    expect(result).toEqual({ id: "relay-msg" });
+    vi.unstubAllGlobals();
   });
 
-  // ── 4. No-op adapter when no env vars are set ──────────────────
-  it("returns no-op adapter when no env vars are set", async () => {
+  // ── 4. Signed relay adapter when no env vars are set ──────────────────
+  it("returns signed relay adapter when no env vars are set", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "relay-send" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ count: 0 }) })
+    );
+
     const client = createSocialClient("http://relay", fakeAccount);
 
     const sendResult = await client.send("someone", "hello");
-    expect(sendResult).toEqual({ id: "noop" });
+    expect(sendResult).toEqual({ id: "relay-send" });
 
     const pollResult = await client.poll();
     expect(pollResult).toEqual({ messages: [] });
 
-    const count = await client.unreadCount();
-    expect(count).toBe(0);
+    vi.unstubAllGlobals();
   });
 
   // ── 5. Telegram takes priority over Twitter ─────────────────────
@@ -158,24 +182,36 @@ describe("createSocialClient", () => {
     expect(mockTwitterClient.send).not.toHaveBeenCalled();
   });
 
-  // ── 6. No-op send returns { id: "noop" } ───────────────────────
-  it("no-op send returns { id: 'noop' }", async () => {
+  // ── 6. Relay send returns server response ───────────────────────
+  it("relay send returns server response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ id: "relay-1" }),
+    }));
     const client = createSocialClient("http://relay", fakeAccount);
     const result = await client.send("to", "content", "replyTo");
-    expect(result).toEqual({ id: "noop" });
+    expect(result).toEqual({ id: "relay-1" });
+    vi.unstubAllGlobals();
   });
 
-  // ── 7. No-op poll returns { messages: [] } ─────────────────────
-  it("no-op poll returns { messages: [] }", async () => {
+  // ── 7. Relay poll returns server response ─────────────────────
+  it("relay poll returns server response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ messages: [] }),
+    }));
     const client = createSocialClient("http://relay", fakeAccount);
     const result = await client.poll("cursor", 10);
     expect(result).toEqual({ messages: [] });
+    vi.unstubAllGlobals();
   });
 
-  // ── 8. No-op unreadCount returns 0 ─────────────────────────────
-  it("no-op unreadCount returns 0", async () => {
+  // ── 8. Relay unreadCount returns server count ─────────────────
+  it("relay unreadCount returns server count", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, json: async () => 0,
+    }));
     const client = createSocialClient("http://relay", fakeAccount);
     const result = await client.unreadCount();
     expect(result).toBe(0);
+    vi.unstubAllGlobals();
   });
 });

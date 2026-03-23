@@ -594,7 +594,7 @@ export class CompressionEngine {
 
   private async logCompressionMetrics(metrics: CompressionMetrics): Promise<void> {
     this.eventStream.append({
-      type: "compression" as EventType,
+      type: "reflection" as EventType,
       agentAddress: this.pickAgentAddress(this.getAllCompressionEvents()),
       goalId: null,
       taskId: null,
