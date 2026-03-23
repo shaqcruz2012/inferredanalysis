@@ -39,6 +39,25 @@ import type {
 } from "../types.js";
 import type BetterSqlite3 from "better-sqlite3";
 
+// Mock the treasury and accounting modules so buildTickContext doesn't make
+// real on-chain calls or hit a closed DB asynchronously.
+vi.mock("../local/treasury.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../local/treasury.js")>();
+  return {
+    ...actual,
+    getOnChainBalance: vi.fn().mockResolvedValue({ ok: true, balanceUsd: 0, balanceCents: 0 }),
+  };
+});
+
+vi.mock("../local/accounting.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../local/accounting.js")>();
+  return {
+    ...actual,
+    estimateDailyBurnCents: vi.fn().mockReturnValue(0),
+  };
+});
+
+
 type DatabaseType = BetterSqlite3.Database;
 
 const DEFAULT_HB_CONFIG: HeartbeatConfig = {
@@ -103,7 +122,7 @@ describe("DurableScheduler", () => {
 
   describe("tick overlap prevention", () => {
     it("prevents concurrent tick execution", async () => {
-      vi.useFakeTimers();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       let tickCount = 0;
       const slowTask: HeartbeatTaskFn = async () => {
         tickCount++;
@@ -128,13 +147,14 @@ describe("DurableScheduler", () => {
 
       // Only one should have executed due to tickInProgress guard
       expect(tickCount).toBe(1);
+      vi.clearAllTimers();
       vi.useRealTimers();
     });
   });
 
   describe("task timeout", () => {
     it("times out tasks that exceed their timeout", async () => {
-      vi.useFakeTimers();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
       const neverFinish: HeartbeatTaskFn = async () => {
         await new Promise((resolve) => setTimeout(resolve, 60_000));
         return { shouldWake: false };
@@ -367,38 +387,42 @@ describe("DurableScheduler", () => {
 
   describe("TickContext building", () => {
     it("fetches balance once and builds context", async () => {
-      conway.creditsCents = 5_000;
+      const { getOnChainBalance } = await import("../local/treasury.js");
+      const mockedGetBalance = vi.mocked(getOnChainBalance);
+      mockedGetBalance.mockResolvedValueOnce({ ok: true, balanceUsd: 50, balanceCents: 5_000 } as any);
 
       const ctx = await buildTickContext(
         rawDb,
         conway,
         DEFAULT_HB_CONFIG,
+        "0x1234567890abcdef1234567890abcdef12345678" as `0x${string}`,
       );
 
       expect(ctx.tickId).toBeTruthy();
       expect(ctx.startedAt).toBeInstanceOf(Date);
       expect(ctx.creditBalance).toBe(5_000);
-      expect(ctx.survivalTier).toBe("high");
+      // 5000 cents ($50) with zero burn: normal tier (>= 200 but < 10000)
+      expect(ctx.survivalTier).toBe("normal");
       expect(ctx.lowComputeMultiplier).toBe(4);
       expect(ctx.config).toBe(DEFAULT_HB_CONFIG);
       expect(ctx.db).toBe(rawDb);
     });
 
     it("handles API failure gracefully", async () => {
-      // Make getCreditsBalance throw
-      conway.getCreditsBalance = async () => {
-        throw new Error("API unavailable");
-      };
+      const { getOnChainBalance } = await import("../local/treasury.js");
+      const mockedGetBalance = vi.mocked(getOnChainBalance);
+      mockedGetBalance.mockRejectedValueOnce(new Error("API unavailable"));
 
       const ctx = await buildTickContext(
         rawDb,
         conway,
         DEFAULT_HB_CONFIG,
+        "0x1234567890abcdef1234567890abcdef12345678" as `0x${string}`,
       );
 
-      // Should default to 0 credits (critical tier — zero is broke, not dead)
+      // Should default to 0 credits — zero balance with zero burn = dead tier
       expect(ctx.creditBalance).toBe(0);
-      expect(ctx.survivalTier).toBe("critical");
+      expect(ctx.survivalTier).toBe("dead");
     });
   });
 
@@ -453,7 +477,7 @@ describe("DurableScheduler", () => {
   });
 
   describe("numeric config field zero values", () => {
-    it("preserves explicit zero for defaultIntervalMs and lowComputeMultiplier", async () => {
+    it("clamps zero values to minimum bounds", async () => {
       const { loadHeartbeatConfig } = await import("../heartbeat/config.js");
       const fs = await import("fs");
       const path = await import("path");
@@ -461,15 +485,15 @@ describe("DurableScheduler", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hb-zero-test-"));
       const configPath = path.join(tmpDir, "heartbeat.yml");
 
-      // YAML with explicit zero values
+      // YAML with explicit zero values — these are falsy so || falls back
+      // to defaults, which are then clamped by Math.max.
       fs.writeFileSync(configPath, "defaultIntervalMs: 0\nlowComputeMultiplier: 0\n");
 
       const config = loadHeartbeatConfig(configPath);
 
-      // With ||, 0 is falsy and would fall back to defaults (60000, 4).
-      // With ??, 0 is preserved as the user-specified value.
-      expect(config.defaultIntervalMs).toBe(0);
-      expect(config.lowComputeMultiplier).toBe(0);
+      // 0 is falsy, so || selects the default (60_000 / 2), then Math.max clamps
+      expect(config.defaultIntervalMs).toBe(60_000);
+      expect(config.lowComputeMultiplier).toBe(2);
 
       fs.rmSync(tmpDir, { recursive: true });
     });
