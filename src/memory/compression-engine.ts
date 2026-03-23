@@ -579,7 +579,7 @@ export class CompressionEngine {
   private async logCompressionError(stage: number, error: unknown): Promise<void> {
     const details = error instanceof Error ? error.message : String(error);
     this.eventStream.append({
-      type: "error" as EventType,
+      type: "compression_error" as EventType,
       agentAddress: this.pickAgentAddress(this.getAllCompressionEvents()),
       goalId: null,
       taskId: null,
@@ -594,7 +594,7 @@ export class CompressionEngine {
 
   private async logCompressionMetrics(metrics: CompressionMetrics): Promise<void> {
     this.eventStream.append({
-      type: "reflection" as EventType,
+      type: "compression" as EventType,
       agentAddress: this.pickAgentAddress(this.getAllCompressionEvents()),
       goalId: null,
       taskId: null,

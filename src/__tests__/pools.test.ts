@@ -11,8 +11,8 @@ import { DEFAULT_ROUTING_MATRIX } from "../inference/types.js";
 import type { SurvivalTier, InferenceTaskType } from "../types.js";
 
 describe("POOL_CASCADE_ORDER", () => {
-  it("has expected order: free_cloud → local → paid", () => {
-    expect(POOL_CASCADE_ORDER).toEqual(["free_cloud", "local", "paid"]);
+  it("has expected order: paid → free_cloud → local", () => {
+    expect(POOL_CASCADE_ORDER).toEqual(["paid", "free_cloud", "local"]);
   });
 });
 

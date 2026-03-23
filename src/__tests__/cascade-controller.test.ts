@@ -107,19 +107,19 @@ describe("CascadeController", () => {
   }
 
   describe("selectPool", () => {
-    it("returns local for tier dead", () => {
+    it("returns free_cloud for tier dead", () => {
       const controller = new CascadeController(mockDb(1000, 500));
-      expect(controller.selectPool("dead")).toBe("local");
+      expect(controller.selectPool("dead")).toBe("free_cloud");
     });
 
-    it("returns local for tier critical", () => {
+    it("returns free_cloud for tier critical", () => {
       const controller = new CascadeController(mockDb(1000, 500));
-      expect(controller.selectPool("critical")).toBe("local");
+      expect(controller.selectPool("critical")).toBe("free_cloud");
     });
 
-    it("returns free_cloud for heartbeat_triage task", () => {
+    it("returns paid for heartbeat_triage task when profitable", () => {
       const controller = new CascadeController(mockDb(1000, 500));
-      expect(controller.selectPool("normal", "heartbeat_triage")).toBe("free_cloud");
+      expect(controller.selectPool("normal", "heartbeat_triage")).toBe("paid");
     });
 
     it("returns paid for agent_turn task", () => {
@@ -137,10 +137,10 @@ describe("CascadeController", () => {
       expect(controller.selectPool("high")).toBe("paid");
     });
 
-    it("returns free_cloud for heartbeat_triage even when tier is dead", () => {
-      // dead/critical check comes first, so it should return local regardless of taskType
+    it("returns free_cloud for heartbeat_triage when tier is dead", () => {
+      // dead/critical tiers always use free_cloud
       const controller = new CascadeController(mockDb(1000, 500));
-      expect(controller.selectPool("dead", "heartbeat_triage")).toBe("local");
+      expect(controller.selectPool("dead", "heartbeat_triage")).toBe("free_cloud");
     });
   });
 

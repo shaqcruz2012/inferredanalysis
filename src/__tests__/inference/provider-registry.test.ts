@@ -56,6 +56,11 @@ describe("ProviderRegistry", () => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.AUTOMATON_CREDITS_BALANCE;
     delete process.env.AUTOMATON_INFERENCE_TASK_TYPE;
+    // Set API keys so provider resolution doesn't skip providers
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    process.env.MISTRAL_API_KEY = "test-mistral-key";
   });
 
   afterAll(() => {

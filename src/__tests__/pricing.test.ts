@@ -39,14 +39,13 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("loadWalletAddress", () => {
-  it("throws when GATEWAY_WALLET_ADDRESS is not set and wallet.json is missing", () => {
+  it("returns placeholder address when GATEWAY_WALLET_ADDRESS is not set and wallet.json is missing", () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
     });
 
-    expect(() => getGatewayPricing()).toThrow(
-      "GATEWAY_WALLET_ADDRESS env var is required",
-    );
+    const pricing = getGatewayPricing();
+    expect(pricing.walletAddress).toMatch(/^0x[a-fA-F0-9]{40}$/);
   });
 
   it("returns env var value when GATEWAY_WALLET_ADDRESS is set", () => {

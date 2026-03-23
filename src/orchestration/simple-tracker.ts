@@ -6,9 +6,6 @@ import type {
   ConwayClient,
 } from "../types.js";
 import type { AgentTracker, FundingProtocol } from "./types.js";
-import { transferUSDC } from "../local/treasury.js";
-import { logTransfer } from "../local/accounting.js";
-import { loadWalletAccount } from "../identity/wallet.js";
 
 const IDLE_STATUSES = new Set<ChildStatus>(["running", "healthy"]);
 
@@ -95,39 +92,25 @@ export class SimpleFundingProtocol implements FundingProtocol {
     }
 
     try {
-      // Phase 4: Use on-chain USDC transfer instead of Conway credits
-      const account = loadWalletAccount();
-      if (!account) {
-        return { success: false };
-      }
-      const result = await transferUSDC(
-        account,
-        childAddress as `0x${string}`,
-        transferAmount / 100,
+      const result = await this.conway.transferCredits(
+        childAddress,
+        transferAmount,
+        "Task funding from orchestrator",
       );
 
-      if (result.success) {
-        logTransfer(this.db.raw, {
-          toAddress: childAddress,
-          amountCents: transferAmount,
-          description: "Task funding from orchestrator",
-          txHash: result.txHash,
-        });
+      if (isTransferSuccessful(result?.status ?? "")) {
         this.db.raw.prepare(
           "UPDATE children SET funded_amount_cents = funded_amount_cents + ? WHERE address = ?",
         ).run(transferAmount, childAddress);
       }
 
-      return { success: result.success };
+      return { success: isTransferSuccessful(result?.status ?? "") };
     } catch {
       return { success: false };
     }
   }
 
   async recallCredits(childAddress: string): Promise<{ success: boolean; amountCents: number }> {
-    // Phase 4: On-chain USDC transfers are one-way from parent to child.
-    // Child agents must send USDC back via their own wallet. We can only
-    // track locally what was funded and mark it as recalled.
     const balance = await this.getBalance(childAddress);
     const amountCents = Math.max(0, Math.floor(balance));
 
@@ -135,12 +118,23 @@ export class SimpleFundingProtocol implements FundingProtocol {
       return { success: true, amountCents: 0 };
     }
 
-    // Mark as recalled locally (child must send funds back independently)
-    this.db.raw.prepare(
-      "UPDATE children SET funded_amount_cents = MAX(0, funded_amount_cents - ?) WHERE address = ?",
-    ).run(amountCents, childAddress);
+    try {
+      const result = await this.conway.transferCredits(
+        this.identity.address,
+        amountCents,
+        `Recall credits from ${childAddress}`,
+      );
 
-    return { success: true, amountCents };
+      if (isTransferSuccessful(result?.status ?? "")) {
+        this.db.raw.prepare(
+          "UPDATE children SET funded_amount_cents = MAX(0, funded_amount_cents - ?) WHERE address = ?",
+        ).run(amountCents, childAddress);
+      }
+
+      return { success: isTransferSuccessful(result?.status ?? ""), amountCents };
+    } catch {
+      return { success: false, amountCents: 0 };
+    }
   }
 
   // Phase 4: Child agent USDC balances can be queried on-chain, but for now

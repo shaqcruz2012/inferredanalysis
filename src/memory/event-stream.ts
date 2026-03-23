@@ -31,6 +31,8 @@ export type EventType =
   | "revenue"
   | "error"
   | "reflection"
+  | "compression"
+  | "compression_error"
   | "compression_warning";
 
 export interface StreamEvent {

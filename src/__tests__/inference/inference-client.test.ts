@@ -105,6 +105,12 @@ describe("UnifiedInferenceClient", () => {
     mockState.calls.splice(0, mockState.calls.length);
     process.env = { ...ORIGINAL_ENV };
     delete process.env.AUTOMATON_CREDITS_BALANCE;
+    // Set API keys so provider resolution doesn't skip providers.
+    // Do NOT set ANTHROPIC_API_KEY — the tests mock openai only,
+    // and Anthropic uses a different SDK that won't be intercepted.
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.GROQ_API_KEY = "test-groq-key";
+    process.env.MISTRAL_API_KEY = "test-mistral-key";
   });
 
   afterAll(() => {
@@ -219,6 +225,11 @@ describe("UnifiedInferenceClient", () => {
     queueError(429, "groq-2");
     queueError(429, "groq-3");
     queueError(429, "groq-4");
+    // mistral exhausted (free_cloud fallback)
+    queueError(429, "mistral-1");
+    queueError(429, "mistral-2");
+    queueError(429, "mistral-3");
+    queueError(429, "mistral-4");
 
     vi.useFakeTimers();
     const pending = expect(
