@@ -28,10 +28,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Preflight checks ──────────────────────────────────────────────
-if [ -z "$ANTHROPIC_API_KEY" ]; then
-  echo "[startup] ERROR: ANTHROPIC_API_KEY is not set."
-  echo "  export ANTHROPIC_API_KEY=sk-ant-..."
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+  echo "[startup] ERROR: No LLM API key set."
+  echo "  export OPENAI_API_KEY=sk-..."
+  echo "  # or: export ANTHROPIC_API_KEY=sk-ant-..."
   exit 1
+fi
+
+# Determine which key to pass to url-summarizer (uses OpenAI-compatible API)
+if [ -n "$OPENAI_API_KEY" ]; then
+  LLM_KEY="$OPENAI_API_KEY"
+  LLM_BASE="https://api.openai.com/v1"
+  LLM_MODEL="gpt-4o-mini"
+  echo "[startup] Using OpenAI ($LLM_MODEL)"
+elif [ -n "$ANTHROPIC_API_KEY" ]; then
+  LLM_KEY="$ANTHROPIC_API_KEY"
+  LLM_BASE="https://api.anthropic.com/v1"
+  LLM_MODEL="claude-haiku-4-5-20251001"
+  echo "[startup] Using Anthropic ($LLM_MODEL)"
 fi
 
 WALLET_PATH="${WALLET_PATH:-$HOME/.automaton/wallet.json}"
@@ -48,7 +62,7 @@ cd "$ROOT" && npx tsx services/text-analysis/src/server.ts &
 PIDS+=($!)
 
 echo "[startup] Starting URL Summarizer on port 9003..."
-cd "$ROOT" && LLM_API_KEY="$ANTHROPIC_API_KEY" npx tsx services/url-summarizer/src/server.ts &
+cd "$ROOT" && LLM_API_KEY="$LLM_KEY" LLM_BASE_URL="$LLM_BASE" LLM_MODEL="$LLM_MODEL" npx tsx services/url-summarizer/src/server.ts &
 PIDS+=($!)
 
 # Give backends a moment to bind

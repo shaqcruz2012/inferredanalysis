@@ -11,7 +11,9 @@
  * The x402 gateway on port 7402 handles payment verification and proxies here.
  * This service only does inference — no payment logic.
  *
- * Usage: ANTHROPIC_API_KEY=... npx tsx src/server.ts
+ * Supports Anthropic and OpenAI. Set one of:
+ *   ANTHROPIC_API_KEY=... npx tsx src/server.ts
+ *   OPENAI_API_KEY=...   npx tsx src/server.ts
  */
 import http from "http";
 import { ulid } from "ulid";
@@ -34,6 +36,26 @@ interface LLMResponse {
   outputTokens: number;
   model: string;
 }
+
+// ── Provider Detection ───────────────────────────────────────────────
+
+type Provider = "anthropic" | "openai";
+
+function detectProvider(): { provider: Provider; apiKey: string } {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) return { provider: "anthropic", apiKey: anthropicKey };
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (openaiKey) return { provider: "openai", apiKey: openaiKey };
+
+  throw new Error("Set ANTHROPIC_API_KEY or OPENAI_API_KEY");
+}
+
+// Model mapping: Anthropic → OpenAI equivalents
+const OPENAI_MODEL_MAP: Record<string, string> = {
+  "claude-haiku-4-5-20251001": "gpt-4o-mini",
+  "claude-sonnet-4-20250514": "gpt-4o",
+};
 
 // ── Tier Definitions ─────────────────────────────────────────────────
 
@@ -80,7 +102,73 @@ const TIERS: Record<string, TierConfig> = {
   },
 };
 
-// ── LLM Caller ───────────────────────────────────────────────────────
+// ── LLM Callers ──────────────────────────────────────────────────────
+
+const llmConfig = detectProvider();
+
+async function callLLM(
+  model: string,
+  systemPrompt: string,
+  userContent: string,
+  maxTokens: number,
+): Promise<LLMResponse> {
+  if (llmConfig.provider === "openai") {
+    const resolvedModel = OPENAI_MODEL_MAP[model] ?? "gpt-4o-mini";
+    return callOpenAI(resolvedModel, systemPrompt, userContent, maxTokens);
+  }
+  return callAnthropic(model, systemPrompt, userContent, maxTokens);
+}
+
+async function callOpenAI(
+  model: string,
+  systemPrompt: string,
+  userContent: string,
+  maxTokens: number,
+): Promise<LLMResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  try {
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${llmConfig.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`OpenAI API ${resp.status}: ${text}`);
+    }
+
+    const data = (await resp.json()) as Record<string, unknown>;
+    const choices = data.choices as Array<Record<string, unknown>> | undefined;
+    const message = choices?.[0]?.message as Record<string, unknown> | undefined;
+    const text = (message?.content as string | undefined)?.trim() ?? "";
+
+    if (!text) throw new Error("Empty response from OpenAI");
+
+    const usage = data.usage as Record<string, number> | undefined;
+    return {
+      content: text,
+      inputTokens: usage?.prompt_tokens ?? 0,
+      outputTokens: usage?.completion_tokens ?? 0,
+      model,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function callAnthropic(
   model: string,
@@ -88,9 +176,6 @@ async function callAnthropic(
   userContent: string,
   maxTokens: number,
 ): Promise<LLMResponse> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
@@ -99,7 +184,7 @@ async function callAnthropic(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
+        "x-api-key": llmConfig.apiKey,
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
@@ -232,7 +317,7 @@ const server = http.createServer(async (req, res) => {
 
   // Call LLM
   try {
-    const result = await callAnthropic(tier.model, tier.systemPrompt, content, tier.maxOutputTokens);
+    const result = await callLLM(tier.model, tier.systemPrompt, content, tier.maxOutputTokens);
 
     log("info", "Success", {
       request_id: requestId,
@@ -260,7 +345,7 @@ server.requestTimeout = 120_000;
 server.listen(PORT, () => {
   log("info", `Text Analysis API listening on port ${PORT}`);
   log("info", `Endpoints: ${Object.keys(TIERS).join(", ")}`);
-  log("info", `LLM: Anthropic (ANTHROPIC_API_KEY ${process.env.ANTHROPIC_API_KEY ? "set" : "NOT SET"})`);
+  log("info", `LLM: ${llmConfig.provider} (key set)`);
 });
 
 server.on("error", (err) => {
