@@ -97,11 +97,13 @@ describe("DurableScheduler", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     db.close();
   });
 
   describe("tick overlap prevention", () => {
     it("prevents concurrent tick execution", async () => {
+      vi.useFakeTimers();
       let tickCount = 0;
       const slowTask: HeartbeatTaskFn = async () => {
         tickCount++;
@@ -121,15 +123,18 @@ describe("DurableScheduler", () => {
       // Start two ticks simultaneously
       const tick1 = scheduler.tick();
       const tick2 = scheduler.tick();
+      await vi.advanceTimersByTimeAsync(100);
       await Promise.all([tick1, tick2]);
 
       // Only one should have executed due to tickInProgress guard
       expect(tickCount).toBe(1);
+      vi.useRealTimers();
     });
   });
 
   describe("task timeout", () => {
     it("times out tasks that exceed their timeout", async () => {
+      vi.useFakeTimers();
       const neverFinish: HeartbeatTaskFn = async () => {
         await new Promise((resolve) => setTimeout(resolve, 60_000));
         return { shouldWake: false };
@@ -145,13 +150,19 @@ describe("DurableScheduler", () => {
         createLegacyContext(db, conway),
       );
 
-      await scheduler.tick();
+      const tickPromise = scheduler.tick();
+      // Advance past the 50ms timeout but not the 60s task timer
+      await vi.advanceTimersByTimeAsync(100);
+      await tickPromise;
 
       // Check that the task was recorded as timeout
       const history = getHeartbeatHistory(rawDb, "never_finish");
       expect(history.length).toBe(1);
       expect(history[0].result).toBe("timeout");
       expect(history[0].error).toContain("timed out");
+      // Clear all remaining timers (the 60s one) before DB closes
+      vi.clearAllTimers();
+      vi.useRealTimers();
     });
   });
 

@@ -5,6 +5,21 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// Mock the treasury module to avoid real network calls to Base mainnet RPC
+vi.mock("../local/treasury.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../local/treasury.js")>();
+  return {
+    ...actual,
+    getOnChainBalance: vi.fn().mockResolvedValue({
+      ok: true,
+      balanceUsd: 50.0,
+      balanceCents: 5000,
+      balanceAtomic: 50000000n,
+    }),
+  };
+});
+
 import { runAgentLoop } from "../agent/loop.js";
 import {
   MockInferenceClient,
