@@ -18,6 +18,8 @@ import {
   logExpense,
   logTransferEvent,
   computeDailyNetProfit,
+  computePnl,
+  estimateDailyBurnCents,
 } from "../local/accounting.js";
 
 // ─── Test Helpers ───────────────────────────────────────────────
@@ -179,6 +181,186 @@ describe("Accounting Ledger", () => {
       });
       expect(id).toBeTruthy();
       expect(typeof id).toBe("string");
+    });
+
+    it("records the transfer and it can be read back", () => {
+      const id = logTransferEvent(db, {
+        type: "tax",
+        fromAccount: "treasury",
+        toAccount: "irs",
+        amountUsd: 25.5,
+        metadata: { note: "quarterly" },
+      });
+      const row = db.prepare("SELECT * FROM transfers WHERE id = ?").get(id) as Record<string, unknown>;
+      expect(row).toBeTruthy();
+      expect(row.type).toBe("tax");
+      expect(row.from_account).toBe("treasury");
+      expect(row.to_account).toBe("irs");
+      expect(row.amount_usd).toBe(25.5);
+      expect(JSON.parse(row.metadata as string)).toEqual({ note: "quarterly" });
+    });
+
+    it("rejects an invalid transfer type via CHECK constraint", () => {
+      expect(() =>
+        db.prepare(
+          `INSERT INTO transfers (id, type, from_account, to_account, amount_usd)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run("bad-type-id", "invalid_type", "a", "b", 10),
+      ).toThrow();
+    });
+  });
+
+  // ── computePnl ────────────────────────────────────────────────
+
+  describe("computePnl", () => {
+    it("returns zeros when there is no data (period=all)", () => {
+      const report = computePnl(db, "all");
+      expect(report.totalRevenueCents).toBe(0);
+      expect(report.totalExpenseCents).toBe(0);
+      expect(report.netCents).toBe(0);
+      expect(report.expenseByCategory).toEqual({});
+    });
+
+    it("returns zeros for zero revenue and zero expenses", () => {
+      const report = computePnl(db);
+      expect(report.totalRevenueCents).toBe(0);
+      expect(report.totalExpenseCents).toBe(0);
+      expect(report.netCents).toBe(0);
+    });
+
+    it("computes correct P&L with revenue and expenses (period=all)", () => {
+      logRevenue(db, { source: "api", amountCents: 1000 });
+      logRevenue(db, { source: "api", amountCents: 500 });
+      logExpense(db, { category: "inference", amountCents: 300 });
+      logExpense(db, { category: "sandbox", amountCents: 200 });
+
+      const report = computePnl(db, "all");
+      expect(report.totalRevenueCents).toBe(1500);
+      expect(report.totalExpenseCents).toBe(500);
+      expect(report.netCents).toBe(1000);
+    });
+
+    it("returns negative netCents when expenses exceed revenue", () => {
+      logRevenue(db, { source: "api", amountCents: 100 });
+      logExpense(db, { category: "inference", amountCents: 500 });
+
+      const report = computePnl(db, "all");
+      expect(report.totalRevenueCents).toBe(100);
+      expect(report.totalExpenseCents).toBe(500);
+      expect(report.netCents).toBe(-400);
+    });
+
+    it("breaks down expenses by category", () => {
+      logExpense(db, { category: "inference", amountCents: 300 });
+      logExpense(db, { category: "inference", amountCents: 100 });
+      logExpense(db, { category: "sandbox", amountCents: 200 });
+      logExpense(db, { category: "api", amountCents: 50 });
+
+      const report = computePnl(db, "all");
+      expect(report.expenseByCategory["inference"]).toBe(400);
+      expect(report.expenseByCategory["sandbox"]).toBe(200);
+      expect(report.expenseByCategory["api"]).toBe(50);
+    });
+
+    it("filters by period=day (only recent data)", () => {
+      // Insert old data directly with a timestamp from 3 days ago
+      db.prepare(
+        `INSERT INTO revenue_events (id, source, amount_cents, description, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("old-rev", "api", 9999, "old", "2020-01-01 00:00:00");
+
+      // Insert recent data via the API (gets current timestamp)
+      logRevenue(db, { source: "api", amountCents: 100 });
+      logExpense(db, { category: "inference", amountCents: 40 });
+
+      const report = computePnl(db, "day");
+      expect(report.totalRevenueCents).toBe(100);
+      expect(report.totalExpenseCents).toBe(40);
+      expect(report.netCents).toBe(60);
+    });
+
+    it("filters by period=week", () => {
+      db.prepare(
+        `INSERT INTO revenue_events (id, source, amount_cents, description, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("old-rev-w", "api", 9999, "old", "2020-01-01 00:00:00");
+
+      logRevenue(db, { source: "api", amountCents: 250 });
+
+      const report = computePnl(db, "week");
+      expect(report.totalRevenueCents).toBe(250);
+    });
+
+    it("filters by period=month", () => {
+      db.prepare(
+        `INSERT INTO revenue_events (id, source, amount_cents, description, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("old-rev-m", "api", 9999, "old", "2020-01-01 00:00:00");
+
+      logRevenue(db, { source: "api", amountCents: 750 });
+
+      const report = computePnl(db, "month");
+      expect(report.totalRevenueCents).toBe(750);
+    });
+
+    it("throws on invalid period", () => {
+      expect(() => computePnl(db, "year")).toThrow('Invalid period "year"');
+    });
+
+    it("includes periodStart and periodEnd in report", () => {
+      const report = computePnl(db, "all");
+      expect(report.periodStart).toBe("1970-01-01T00:00:00.000Z");
+      expect(report.periodEnd).toBeTruthy();
+    });
+  });
+
+  // ── estimateDailyBurnCents ────────────────────────────────────
+
+  describe("estimateDailyBurnCents", () => {
+    it("returns 0 when there are no expenses", () => {
+      const burn = estimateDailyBurnCents(db);
+      expect(burn).toBe(0);
+    });
+
+    it("computes burn with fewer than 1 day of data (single day)", () => {
+      // All expenses on the same day (today) => 1 distinct day
+      logExpense(db, { category: "inference", amountCents: 100 });
+      logExpense(db, { category: "sandbox", amountCents: 50 });
+
+      const burn = estimateDailyBurnCents(db);
+      // total=150, days=1 => 150 cents/day
+      expect(burn).toBe(150);
+    });
+
+    it("averages across multiple days of data", () => {
+      // Insert expenses spread across multiple days within the last 7 days
+      const now = Date.now();
+      for (let d = 0; d < 7; d++) {
+        const ts = new Date(now - d * 86_400_000).toISOString().replace("T", " ").slice(0, 19);
+        db.prepare(
+          `INSERT INTO expense_events (id, category, amount_cents, description, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(`burn-${d}`, "inference", 100, "daily expense", ts);
+      }
+
+      const burn = estimateDailyBurnCents(db);
+      // total=700, days=7 => 100 cents/day
+      expect(burn).toBe(100);
+    });
+
+    it("ignores expenses older than 7 days", () => {
+      // Insert old expense
+      db.prepare(
+        `INSERT INTO expense_events (id, category, amount_cents, description, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("old-exp", "inference", 99999, "old", "2020-01-01 00:00:00");
+
+      // Insert recent expense
+      logExpense(db, { category: "inference", amountCents: 200 });
+
+      const burn = estimateDailyBurnCents(db);
+      // Only the recent 200 should count, across 1 day
+      expect(burn).toBe(200);
     });
   });
 });
