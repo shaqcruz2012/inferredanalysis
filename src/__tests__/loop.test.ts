@@ -20,6 +20,15 @@ vi.mock("../local/treasury.js", async (importOriginal) => {
   };
 });
 
+// Mock the registry discovery module to avoid real network calls in discover_agents
+vi.mock("../registry/discovery.js", () => ({
+  discoverAgents: vi.fn().mockResolvedValue([
+    { agentId: "1", name: "agent-alpha", owner: "0xAAAAAAAAAAAA", description: "Test agent alpha", agentURI: "https://alpha.test" },
+    { agentId: "2", name: "agent-beta", owner: "0xBBBBBBBBBBBB", description: "Test agent beta", agentURI: "https://beta.test" },
+  ]),
+  searchAgents: vi.fn().mockResolvedValue([]),
+}));
+
 // Mock the cascade controller to avoid real provider HTTP calls.
 // The real CascadeController tries free_cloud and local pools (Mistral, Ollama)
 // before falling back to the test's MockInferenceClient, causing timeouts.
@@ -62,6 +71,7 @@ import {
   toolCallResponse,
   noToolResponse,
 } from "./mocks.js";
+import { getOnChainBalance } from "../local/treasury.js";
 import type { AutomatonDatabase, AgentTurn, AgentState } from "../types.js";
 
 describe("Agent Loop", () => {
@@ -148,6 +158,16 @@ describe("Agent Loop", () => {
   it("low credits forces low-compute mode", async () => {
     conway.creditsCents = 50; // Below $1 threshold -> critical
 
+    // Override the module-level getOnChainBalance mock to return a low balance
+    // so the loop's getFinancialState sees low_compute tier (50 cents)
+    const { getOnChainBalance } = await import("../local/treasury.js");
+    vi.mocked(getOnChainBalance).mockResolvedValue({
+      ok: true,
+      balanceUsd: 0.50,
+      balanceCents: 50,
+      balanceAtomic: 500000n,
+    });
+
     const inference = new MockInferenceClient([
       noToolResponse("Low on credits."),
     ]);
@@ -161,6 +181,14 @@ describe("Agent Loop", () => {
     });
 
     expect(inference.lowComputeMode).toBe(true);
+
+    // Restore the original mock for other tests
+    vi.mocked(getOnChainBalance).mockResolvedValue({
+      ok: true,
+      balanceUsd: 50.0,
+      balanceCents: 5000,
+      balanceAtomic: 50000000n,
+    });
   });
 
   it("sleep tool transitions state", async () => {
@@ -239,8 +267,8 @@ describe("Agent Loop", () => {
   });
 
   it("MAX_TOOL_CALLS_PER_TURN limits tool calls", async () => {
-    // Create a response with 15 tool calls (max is 10)
-    const manyToolCalls = Array.from({ length: 15 }, (_, i) => ({
+    // Create a response with 20 tool calls (max is 15)
+    const manyToolCalls = Array.from({ length: 20 }, (_, i) => ({
       name: "exec",
       arguments: { command: `echo ${i}` },
     }));
@@ -261,10 +289,10 @@ describe("Agent Loop", () => {
       onTurnComplete: (turn) => turns.push(turn),
     });
 
-    // The first turn should have at most 10 tool calls executed
+    // The first turn should have at most 15 tool calls executed
     const execTurn = turns.find((t) => t.toolCalls.length > 0);
     expect(execTurn).toBeDefined();
-    expect(execTurn!.toolCalls.length).toBeLessThanOrEqual(10);
+    expect(execTurn!.toolCalls.length).toBeLessThanOrEqual(15);
   });
 
   it("consecutive errors trigger sleep", async () => {
@@ -464,6 +492,14 @@ describe("Agent Loop", () => {
 
   it("zero credits enters critical tier, not dead", async () => {
     conway.creditsCents = 0; // $0 -> critical tier (agent stays alive)
+    // Override the on-chain balance mock to return near-zero balance so the loop sees critical tier.
+    // balanceCents must be >= 10 (otherwise getSurvivalTier returns "dead", which the loop ignores).
+    vi.mocked(getOnChainBalance).mockResolvedValue({
+      ok: true as const,
+      balanceUsd: 0.10,
+      balanceCents: 10,
+      balanceAtomic: 100000n,
+    });
 
     const inference = new MockInferenceClient([
       noToolResponse("I have no credits but I'm still alive."),
@@ -534,10 +570,10 @@ describe("Agent Loop", () => {
     // The intervention message should have been injected after the 3rd idle-only turn.
     // Turn 4 should have the maintenance loop intervention as input.
     const interventionTurn = turns.find(
-      (t) => t.input?.includes("MAINTENANCE LOOP DETECTED"),
+      (t) => t.input?.includes("idle-loop"),
     );
     expect(interventionTurn).toBeDefined();
-    expect(interventionTurn!.input).toContain("status-check tools");
+    expect(interventionTurn!.input).toContain("build something");
   });
 
   it("maintenance loop NOT triggered when turns mix idle and productive tools", async () => {
@@ -607,7 +643,7 @@ describe("Agent Loop", () => {
 
     const inference = new MockInferenceClient([
       idleToolResponse("check_credits", {}, "v1"),
-      idleToolResponse("check_usdc_balance", {}, "v2"),
+      idleToolResponse("review_memory", {}, "v2"),
       idleToolResponse("git_status", {}, "v3"),
       noToolResponse("Starting productive work now."),
     ]);
@@ -624,7 +660,7 @@ describe("Agent Loop", () => {
     });
 
     const interventionTurn = turns.find(
-      (t) => t.input?.includes("MAINTENANCE LOOP DETECTED"),
+      (t) => t.input?.includes("idle-loop"),
     );
     expect(interventionTurn).toBeDefined();
   });
@@ -679,7 +715,7 @@ describe("Agent Loop", () => {
 
     // Should have the warning at turn 4 (injected after turn 3)
     const warningTurn = turns.find(
-      (t) => t.input?.includes("LOOP DETECTED"),
+      (t) => t.input?.includes("You are stuck in a loop"),
     );
     expect(warningTurn).toBeDefined();
 
@@ -741,13 +777,13 @@ describe("Agent Loop", () => {
     // Should have gotten a warning, not enforcement (agent is still running, not force-slept)
     // The second set of 3 identical patterns gets a NEW warning, not enforcement
     const warningTurns = turns.filter(
-      (t) => t.input?.includes("LOOP DETECTED"),
+      (t) => t.input?.includes("You are stuck in a loop repeating"),
     );
     expect(warningTurns.length).toBeGreaterThanOrEqual(2);
 
     // No enforcement turn should exist
     const enforcementTurn = turns.find(
-      (t) => t.input?.includes("LOOP ENFORCEMENT"),
+      (t) => t.input?.includes("loop-enforcement"),
     );
     expect(enforcementTurn).toBeUndefined();
   });
@@ -798,13 +834,13 @@ describe("Agent Loop", () => {
 
     // No maintenance loop detection should fire since discover_agents is NOT idle
     const maintenanceTurn = turns.find(
-      (t) => t.input?.includes("MAINTENANCE LOOP DETECTED"),
+      (t) => t.input?.includes("idle-loop"),
     );
     expect(maintenanceTurn).toBeUndefined();
 
     // But the repetitive pattern detector SHOULD fire (3 identical patterns)
     const loopWarning = turns.find(
-      (t) => t.input?.includes("LOOP DETECTED"),
+      (t) => t.input?.includes("You are stuck in a loop repeating"),
     );
     expect(loopWarning).toBeDefined();
   });
