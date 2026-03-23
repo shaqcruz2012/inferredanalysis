@@ -4,8 +4,13 @@
  * Tests for executeFundingStrategies, especially per-tier cooldown isolation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { executeFundingStrategies } from "../survival/funding.js";
+
+vi.mock("../local/treasury.js", () => ({
+  getOnChainBalance: vi.fn().mockResolvedValue({ ok: true, balanceCents: 0, raw: 0n }),
+  formatBalance: (cents: number) => `$${(cents / 100).toFixed(2)}`,
+}));
 import {
   MockConwayClient,
   createTestDb,
