@@ -32,6 +32,14 @@ vi.mock("viem", async (importOriginal) => {
   };
 });
 
+// Mock global fetch to prevent real HTTP calls (e.g. fetchAgentCard)
+const mockFetch = vi.fn().mockResolvedValue({
+  ok: true,
+  headers: new Headers(),
+  text: async () => JSON.stringify({ name: "TestAgent", type: "agent" }),
+});
+vi.stubGlobal("fetch", mockFetch);
+
 // Mock logger to suppress output
 vi.mock("../observability/logger.js", () => ({
   createLogger: () => ({
