@@ -398,7 +398,7 @@ describe("CompressionEngine.execute", () => {
     expect(result.metrics.latencyMs).toBeGreaterThanOrEqual(0);
 
     const metricsRows = db
-      .prepare("SELECT COUNT(*) AS count FROM event_stream WHERE type = 'compression'")
+      .prepare("SELECT COUNT(*) AS count FROM event_stream WHERE type = 'reflection'")
       .get() as { count: number };
 
     expect(metricsRows.count).toBe(1);
