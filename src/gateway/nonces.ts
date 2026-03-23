@@ -33,6 +33,29 @@ export function checkNonce(db: Database, nonce: string): boolean {
   return !row;
 }
 
+/**
+ * Atomically check and reserve a nonce in a single transaction.
+ * Returns true if the nonce was successfully reserved (not seen before).
+ * Returns false if the nonce already exists (replay detected).
+ */
+export function checkAndReserveNonce(
+  db: Database,
+  params: {
+    nonce: string;
+    fromAddr: string;
+    amountAtomic: string;
+    tier: string;
+  },
+): boolean {
+  // INSERT OR IGNORE will silently skip if nonce already exists (PRIMARY KEY conflict).
+  // changes() returns 0 if the row was ignored, 1 if inserted.
+  const result = db.prepare(
+    `INSERT OR IGNORE INTO x402_nonces (nonce, from_addr, amount_atomic, tier, status)
+     VALUES (?, ?, ?, ?, 'pending')`,
+  ).run(params.nonce, params.fromAddr, params.amountAtomic, params.tier);
+  return result.changes > 0;
+}
+
 export function reserveNonce(
   db: Database,
   params: {

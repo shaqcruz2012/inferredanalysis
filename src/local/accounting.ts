@@ -167,26 +167,33 @@ export interface TransferLog {
 export function logTransfer(db: Database, transfer: TransferLog): string {
   const id = transfer.id || ulid();
 
-  // Log in expense_events
-  logExpense(db, {
-    id,
-    category: "transfer",
-    amountCents: transfer.amountCents,
-    description: transfer.description || `Transfer to ${transfer.toAddress}`,
-    metadata: { toAddress: transfer.toAddress, txHash: transfer.txHash },
+  // Atomic: write both expense_events and transactions in a single transaction
+  const writeTransfer = db.transaction(() => {
+    // Log in expense_events
+    db.prepare(
+      `INSERT INTO expense_events (id, category, amount_cents, description, metadata)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      "transfer",
+      transfer.amountCents,
+      transfer.description || `Transfer to ${transfer.toAddress}`,
+      JSON.stringify({ toAddress: transfer.toAddress, txHash: transfer.txHash }),
+    );
+
+    // Also log in the existing transactions table for backward compatibility
+    db.prepare(
+      `INSERT OR IGNORE INTO transactions (id, type, amount_cents, description)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      id,
+      "transfer_out",
+      transfer.amountCents,
+      transfer.description || `USDC transfer to ${transfer.toAddress}`,
+    );
   });
 
-  // Also log in the existing transactions table for backward compatibility
-  db.prepare(
-    `INSERT OR IGNORE INTO transactions (id, type, amount_cents, description)
-     VALUES (?, ?, ?, ?)`,
-  ).run(
-    id,
-    "transfer_out",
-    transfer.amountCents,
-    transfer.description || `USDC transfer to ${transfer.toAddress}`,
-  );
-
+  writeTransfer();
   return id;
 }
 
@@ -236,21 +243,25 @@ export function computePnl(db: Database, period: string = "all"): PnlReport {
 
   const periodEnd = now.toISOString();
 
-  // Total revenue
-  const revRow = db.prepare(
-    `SELECT COALESCE(SUM(amount_cents), 0) as total FROM revenue_events WHERE created_at >= ?`,
-  ).get(periodStart) as { total: number };
+  // Read all P&L data in a single transaction for consistency
+  const readPnl = db.transaction(() => {
+    const revRow = db.prepare(
+      `SELECT COALESCE(SUM(amount_cents), 0) as total FROM revenue_events WHERE created_at >= ?`,
+    ).get(periodStart) as { total: number };
 
-  // Total expenses
-  const expRow = db.prepare(
-    `SELECT COALESCE(SUM(amount_cents), 0) as total FROM expense_events WHERE created_at >= ?`,
-  ).get(periodStart) as { total: number };
+    const expRow = db.prepare(
+      `SELECT COALESCE(SUM(amount_cents), 0) as total FROM expense_events WHERE created_at >= ?`,
+    ).get(periodStart) as { total: number };
 
-  // Expense breakdown by category
-  const catRows = db.prepare(
-    `SELECT category, COALESCE(SUM(amount_cents), 0) as total
-     FROM expense_events WHERE created_at >= ? GROUP BY category`,
-  ).all(periodStart) as Array<{ category: string; total: number }>;
+    const catRows = db.prepare(
+      `SELECT category, COALESCE(SUM(amount_cents), 0) as total
+       FROM expense_events WHERE created_at >= ? GROUP BY category`,
+    ).all(periodStart) as Array<{ category: string; total: number }>;
+
+    return { revRow, expRow, catRows };
+  });
+
+  const { revRow, expRow, catRows } = readPnl();
 
   const expenseByCategory: Record<string, number> = {};
   for (const row of catRows) {

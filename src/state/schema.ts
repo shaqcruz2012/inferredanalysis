@@ -398,6 +398,7 @@ export const MIGRATION_V5 = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_wm_session ON working_memory(session_id, priority);
+  CREATE INDEX IF NOT EXISTS idx_wm_expires ON working_memory(expires_at) WHERE expires_at IS NOT NULL;
 
   CREATE TABLE IF NOT EXISTS episodic_memory (
     id TEXT PRIMARY KEY,
@@ -418,6 +419,7 @@ export const MIGRATION_V5 = `
   CREATE INDEX IF NOT EXISTS idx_episodic_type ON episodic_memory(event_type);
   CREATE INDEX IF NOT EXISTS idx_episodic_importance ON episodic_memory(importance);
   CREATE INDEX IF NOT EXISTS idx_episodic_classification ON episodic_memory(classification);
+  CREATE INDEX IF NOT EXISTS idx_episodic_session ON episodic_memory(session_id, created_at DESC);
 
   CREATE TABLE IF NOT EXISTS session_summaries (
     id TEXT PRIMARY KEY,

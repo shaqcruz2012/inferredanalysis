@@ -111,7 +111,7 @@ export class SemanticMemoryManager {
   getByCategory(category: SemanticCategory): SemanticMemoryEntry[] {
     try {
       const rows = this.db.prepare(
-        "SELECT * FROM semantic_memory WHERE category = ? ORDER BY confidence DESC, updated_at DESC",
+        "SELECT * FROM semantic_memory WHERE category = ? ORDER BY confidence DESC, updated_at DESC LIMIT 200",
       ).all(category) as any[];
       return rows.map(deserializeSemantic);
     } catch (error) {

@@ -126,7 +126,7 @@ export class EpisodicMemoryManager {
   summarizeSession(sessionId: string): string {
     try {
       const entries = this.db.prepare(
-        "SELECT * FROM episodic_memory WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM episodic_memory WHERE session_id = ? ORDER BY created_at ASC LIMIT 1000",
       ).all(sessionId) as any[];
 
       if (entries.length === 0) return "No activity recorded for this session.";

@@ -13,7 +13,7 @@ import type BetterSqlite3 from "better-sqlite3";
 import type { PrivateKeyAccount } from "viem";
 import { getGatewayPricing, buildPaymentRequirement } from "./pricing.js";
 import { decodePaymentHeader, verifyX402Signature } from "./verify.js";
-import { checkNonce, reserveNonce } from "./nonces.js";
+import { checkAndReserveNonce } from "./nonces.js";
 import { proxyRequest } from "./proxy.js";
 import { executeTransferOnChain } from "./on-chain.js";
 import type { GatewayPricing, GatewayTier } from "./types.js";
@@ -81,6 +81,7 @@ export function createGatewayServer(options: GatewayOptions) {
   }
 
   const server = http.createServer(async (req, res) => {
+    try {
     const method = req.method ?? "GET";
     const url = req.url ?? "/";
 
@@ -185,9 +186,15 @@ export function createGatewayServer(options: GatewayOptions) {
       return;
     }
 
-    // Check nonce (replay prevention)
+    // Atomic nonce check + reserve (prevents race condition)
     const nonce = payment.payload.authorization.nonce;
-    if (!checkNonce(options.db, nonce)) {
+    const nonceReserved = checkAndReserveNonce(options.db, {
+      nonce,
+      fromAddr: payment.payload.authorization.from,
+      amountAtomic: payment.payload.authorization.value,
+      tier: tierName,
+    });
+    if (!nonceReserved) {
       const requirement = buildPaymentRequirement(pricing, tierName);
       res.writeHead(402, {
         "Content-Type": "application/json",
@@ -199,14 +206,6 @@ export function createGatewayServer(options: GatewayOptions) {
       }));
       return;
     }
-
-    // Reserve nonce
-    reserveNonce(options.db, {
-      nonce,
-      fromAddr: payment.payload.authorization.from,
-      amountAtomic: payment.payload.authorization.value,
-      tier: tierName,
-    });
 
     // Read request body
     const body = await readBody(req);
@@ -271,6 +270,12 @@ export function createGatewayServer(options: GatewayOptions) {
       }).catch(() => {
         // Errors are already logged by executeTransferOnChain
       });
+    }
+    } catch (err) {
+      // Catch-all for unhandled errors — prevents client hang
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: "Internal server error" });
+      }
     }
   });
 

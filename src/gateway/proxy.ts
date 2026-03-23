@@ -9,6 +9,9 @@ import { createLogger } from "../observability/logger.js";
 
 const logger = createLogger("gateway.proxy");
 
+/** Max response body size from backend (5 MB) */
+const MAX_RESPONSE_BYTES = 5_242_880;
+
 interface ProxyRequest {
   backend: string;  // e.g., "http://127.0.0.1:9000"
   path: string;     // e.g., "/analyze"
@@ -45,9 +48,23 @@ export function proxyRequest(req: ProxyRequest): Promise<ProxyResponse> {
           timeout,
         },
         (proxyRes) => {
-          let body = "";
-          proxyRes.on("data", (chunk) => (body += chunk));
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          proxyRes.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > MAX_RESPONSE_BYTES) {
+              proxyReq.destroy();
+              resolve({
+                status: 502,
+                headers: {},
+                body: JSON.stringify({ error: "Backend response too large" }),
+              });
+              return;
+            }
+            chunks.push(chunk);
+          });
           proxyRes.on("end", () => {
+            const body = Buffer.concat(chunks).toString("utf8");
             const headers: Record<string, string> = {};
             for (const [key, val] of Object.entries(proxyRes.headers)) {
               if (typeof val === "string") headers[key] = val;
