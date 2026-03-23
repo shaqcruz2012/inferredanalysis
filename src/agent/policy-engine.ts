@@ -19,6 +19,9 @@ import type {
 } from "../types.js";
 import { insertPolicyDecision } from "../state/database.js";
 import type { PolicyDecisionRow } from "../state/database.js";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("policy-engine");
 
 export class PolicyEngine {
   private db: Database.Database;
@@ -61,7 +64,7 @@ export class PolicyEngine {
       } catch (err) {
         // Fail-closed: if a safety rule crashes, deny the action rather than
         // silently allowing a potentially dangerous tool call through.
-        console.error("Policy rule evaluation failed — denying (fail-closed)", {
+        logger.error("Policy rule evaluation failed — denying (fail-closed)", undefined, {
           ruleId: rule.id,
           error: err instanceof Error ? err.message : String(err),
         });
@@ -136,7 +139,7 @@ export class PolicyEngine {
     try {
       insertPolicyDecision(this.db, row);
     } catch (err) {
-      console.error("Failed to log policy decision", {
+      logger.error("Failed to log policy decision", undefined, {
         error: err instanceof Error ? err.message : String(err),
         toolName: decision.toolName,
         decision: decision.action,

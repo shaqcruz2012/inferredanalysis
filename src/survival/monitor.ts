@@ -20,6 +20,9 @@ import {
   formatBalance,
 } from "../local/treasury.js";
 import { estimateDailyBurnCents } from "../local/accounting.js";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("monitor");
 
 export interface ResourceStatus {
   financial: FinancialState;
@@ -47,7 +50,7 @@ export async function checkResources(
       usdcBalance = result.balanceUsd;
       balanceCents = result.balanceCents;
     }
-  } catch (err) { console.warn("[monitor] Balance fetch failed:", err instanceof Error ? err.message : String(err)); }
+  } catch (err) { logger.warn("Balance fetch failed: " + (err instanceof Error ? err.message : String(err))); }
 
   // creditsCents now equals the USDC balance in cents
   const creditsCents = balanceCents;
@@ -71,7 +74,7 @@ export async function checkResources(
   let dailyBurnCents = 0;
   try {
     dailyBurnCents = estimateDailyBurnCents(db.raw);
-  } catch (err) { console.warn("[monitor] Burn rate estimation failed:", err instanceof Error ? err.message : String(err)); }
+  } catch (err) { logger.warn("Burn rate estimation failed: " + (err instanceof Error ? err.message : String(err))); }
 
   const tier = getSurvivalTierFromBalance(creditsCents, dailyBurnCents);
   const prevTierStr = db.getKV("current_tier");

@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
 import OpenAI from "openai";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("provider-registry");
 
 export type ModelTier = "reasoning" | "fast" | "cheap";
 
@@ -363,7 +366,7 @@ export class ProviderRegistry {
         emergencyStopCredits = configuredEmergencyStop;
       }
     } catch (err) {
-      console.warn(`[ProviderRegistry] Failed to load config:`, err instanceof Error ? err.message : err);
+      logger.warn("Failed to load config: " + (err instanceof Error ? err.message : String(err)));
     }
 
     return new ProviderRegistry(providers, tierDefaults, emergencyStopCredits);

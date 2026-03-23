@@ -15,6 +15,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createGatewayServer } from "./server.js";
 import { initNonceSchema } from "./nonces.js";
 import { initAccountingSchema } from "../local/accounting.js";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("gateway");
 
 const PORT = parseInt(process.env.GATEWAY_PORT ?? "7402", 10);
 const DB_PATH = process.env.GATEWAY_DB_PATH ??
@@ -29,10 +32,10 @@ function main() {
     const walletRaw = fs.readFileSync(WALLET_PATH, "utf-8");
     const wallet = JSON.parse(walletRaw);
     account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
-    console.log(`[gateway] Wallet loaded: ${account.address}`);
+    logger.info(`Wallet loaded: ${account.address}`);
   } catch (err: unknown) {
-    console.error(`[gateway] Failed to load wallet from ${WALLET_PATH}: ${err instanceof Error ? err.message : String(err)}`);
-    console.error("[gateway] On-chain execution will be disabled.");
+    logger.error(`Failed to load wallet from ${WALLET_PATH}: ${err instanceof Error ? err.message : String(err)}`);
+    logger.error("On-chain execution will be disabled.");
   }
 
   // Open database
@@ -57,18 +60,18 @@ function main() {
   });
 
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`[gateway] x402 gateway running on http://0.0.0.0:${PORT}`);
-    console.log(`[gateway] Wallet: ${pricing.walletAddress}`);
-    console.log(`[gateway] Endpoints:`);
+    logger.info(`x402 gateway running on http://0.0.0.0:${PORT}`);
+    logger.info(`Wallet: ${pricing.walletAddress}`);
+    logger.info("Endpoints:");
     for (const [name, tier] of Object.entries(pricing.tiers)) {
-      console.log(`  ${tier.route} → $${tier.priceUsd} (${name})`);
+      logger.info(`  ${tier.route} → $${tier.priceUsd} (${name})`);
     }
-    console.log(`[gateway] On-chain execution: ${account ? "ENABLED" : "DISABLED"}`);
+    logger.info(`On-chain execution: ${account ? "ENABLED" : "DISABLED"}`);
   });
 
   // Graceful shutdown
   process.on("SIGINT", () => {
-    console.log("\n[gateway] Shutting down...");
+    logger.info("Shutting down...");
     server.close();
     db.close();
     process.exit(0);

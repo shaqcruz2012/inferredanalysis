@@ -13,6 +13,9 @@ import type {
   SurvivalTier,
 } from "../types.js";
 import { formatBalance, getOnChainBalance } from "../local/treasury.js";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("funding");
 
 export interface FundingAttempt {
   strategy: string;
@@ -39,7 +42,7 @@ export async function executeFundingStrategies(
   try {
     const result = await getOnChainBalance(identity.address);
     if (result.ok) balanceCents = result.balanceCents;
-  } catch (err) { console.warn("[funding] Balance fetch failed:", err instanceof Error ? err.message : String(err)); }
+  } catch (err) { logger.warn("Balance fetch failed: " + (err instanceof Error ? err.message : String(err))); }
 
   // Check how recently we last begged for this specific tier (don't spam).
   const tierKey = `last_funding_request_${tier}`;
