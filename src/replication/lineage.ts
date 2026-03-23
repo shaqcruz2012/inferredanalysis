@@ -117,9 +117,9 @@ export async function pruneDeadChildren(
         }
       }
 
-      // Actually delete from DB
-      deleteChild(db.raw, child.id);
-      removed++;
+      // Actually delete from DB (only if status hasn't changed since snapshot)
+      const deleted = deleteChild(db.raw, child.id, child.status);
+      if (deleted) removed++;
     } catch (error) {
       logger.error(`Failed to prune child ${child.id}`, error instanceof Error ? error : undefined);
     }

@@ -2371,9 +2371,15 @@ export function updateChildStatus(db: DatabaseType, childId: string, status: str
   ).run(status, childId);
 }
 
-export function deleteChild(db: DatabaseType, childId: string): void {
-  db.prepare("DELETE FROM children WHERE id = ?").run(childId);
+export function deleteChild(db: DatabaseType, childId: string, expectedStatus?: string): boolean {
+  if (expectedStatus) {
+    const result = db.prepare("DELETE FROM children WHERE id = ? AND status = ?").run(childId, expectedStatus);
+    if (result.changes === 0) return false; // Status changed; skip lifecycle cleanup
+  } else {
+    db.prepare("DELETE FROM children WHERE id = ?").run(childId);
+  }
   db.prepare("DELETE FROM child_lifecycle_events WHERE child_id = ?").run(childId);
+  return true;
 }
 
 function deserializeLifecycleEventRow(row: any): ChildLifecycleEventRow {

@@ -265,7 +265,7 @@ describe("CascadeController", () => {
       expect(ctrl.isCircuitOpen("test-provider")).toBe(true); // 3 failures, now open
     });
 
-    it("resets after CB_DISABLE_MS expires", () => {
+    it("allows retry after CB_DISABLE_MS expires but keeps failure count", () => {
       const controller = new CascadeController(mockDb(0, 0));
       const ctrl = controller as any;
 
@@ -282,12 +282,43 @@ describe("CascadeController", () => {
         disabledUntil: Date.now() - 1,
       });
 
-      // Circuit should now be closed (reset)
+      // Circuit should now be closed (allow retry)
       expect(ctrl.isCircuitOpen("test-provider")).toBe(false);
 
-      // Verify failures were reset to 0
+      // Failures should be preserved (only recordSuccess resets them)
       const resetState = ctrl.circuitBreaker.get("test-provider");
-      expect(resetState.failures).toBe(0);
+      expect(resetState.failures).toBe(3);
+      expect(resetState.disabledUntil).toBe(0);
+    });
+
+    it("intermittent failures across reset windows still accumulate to threshold", () => {
+      const controller = new CascadeController(mockDb(0, 0));
+      const ctrl = controller as any;
+
+      // First failure
+      ctrl.recordFailure("flaky-provider");
+      expect(ctrl.isCircuitOpen("flaky-provider")).toBe(false); // 1 failure, not open
+
+      // Second failure
+      ctrl.recordFailure("flaky-provider");
+      expect(ctrl.isCircuitOpen("flaky-provider")).toBe(false); // 2 failures, not open
+
+      // Simulate: breaker was opened (e.g. by a previous threshold hit) and expired.
+      // Force disabledUntil into the past to simulate the reset window expiring
+      // between the 2nd and 3rd failures.
+      ctrl.circuitBreaker.set("flaky-provider", {
+        failures: 2,
+        disabledUntil: Date.now() - 1,
+      });
+
+      // isCircuitOpen clears disabledUntil but preserves failures
+      expect(ctrl.isCircuitOpen("flaky-provider")).toBe(false);
+      const stateAfterExpiry = ctrl.circuitBreaker.get("flaky-provider");
+      expect(stateAfterExpiry.failures).toBe(2); // still 2, not reset
+
+      // Third failure — should now trip the breaker
+      ctrl.recordFailure("flaky-provider");
+      expect(ctrl.isCircuitOpen("flaky-provider")).toBe(true); // 3 failures, open
     });
 
     it("resets on success", () => {

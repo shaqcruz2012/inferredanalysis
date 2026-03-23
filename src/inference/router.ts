@@ -61,7 +61,7 @@ export class InferenceRouter {
       };
     }
 
-    // Try each candidate model; on retryable errors (429, 413, 500, 503) try the next
+    // Try each candidate model; on retryable errors (429, 500, 503, 504) try the next
     let lastError: Error | null = null;
     for (const model of candidates) {
       try {
@@ -69,7 +69,7 @@ export class InferenceRouter {
       } catch (error: any) {
         lastError = error;
         const errMsg = error?.message ?? String(error);
-        const isRetryable = /429|413|500|503|rate.limit/i.test(errMsg);
+        const isRetryable = /429|500|503|504|rate.limit/i.test(errMsg);
         if (isRetryable && candidates.indexOf(model) < candidates.length - 1) {
           // Try next candidate
           continue;

@@ -180,7 +180,7 @@ describe("UnifiedInferenceClient", () => {
     vi.useRealTimers();
   });
 
-  it.each([429, 500, 503])(
+  it.each([429, 500, 503, 504])(
     "fails over to next provider on retryable %s errors",
     async (status) => {
       const client = createClient();

@@ -7,7 +7,7 @@ import {
   type ResolvedModel,
 } from "./provider-registry.js";
 
-const RETRYABLE_STATUS_CODES = new Set([429, 500, 503]);
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 503, 504]);
 const RETRY_BACKOFF_MS = [1000, 2000, 4000] as const;
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5;
 const CIRCUIT_BREAKER_DISABLE_MS = 5 * 60_000;
@@ -669,7 +669,7 @@ function getStatusCode(error: unknown): number | undefined {
   }
 
   if (typeof candidate.message === "string") {
-    const match = candidate.message.match(/\b(429|500|503)\b/);
+    const match = candidate.message.match(/\b(429|500|503|504)\b/);
     if (match) {
       return Number(match[1]);
     }

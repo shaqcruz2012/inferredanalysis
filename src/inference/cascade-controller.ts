@@ -293,11 +293,11 @@ export class CascadeController {
     const state = this.circuitBreaker.get(providerId);
     if (!state) return false;
     if (state.disabledUntil > Date.now()) return true;
-    // Only reset if the breaker was actually opened and has now expired.
-    // When disabledUntil is 0, the breaker was never opened — don't erase
-    // accumulated failures, or the threshold can never be reached.
+    // Breaker expired — allow retrying but keep the failure count.
+    // Only recordSuccess() resets failures to 0, so intermittent failures
+    // that span across reset windows still accumulate toward the threshold.
     if (state.disabledUntil > 0) {
-      this.circuitBreaker.set(providerId, { failures: 0, disabledUntil: 0 });
+      this.circuitBreaker.set(providerId, { failures: state.failures, disabledUntil: 0 });
     }
     return false;
   }
@@ -455,7 +455,7 @@ export class CascadeController {
         return result;
       } catch (e: unknown) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        const isRetryable = /429|413|500|503|rate.limit|timeout/i.test(errMsg)
+        const isRetryable = /429|500|503|504|rate.limit|timeout/i.test(errMsg)
           || isCascadable400(errMsg);
         logger.warn(`Cascade: ${provider.id} failed: ${errMsg.slice(0, 200)}`);
 
@@ -540,7 +540,7 @@ export class CascadeController {
       } catch (e: unknown) {
         const errMsg = e instanceof Error ? e.message : String(e);
         lastErrorMsg = errMsg;
-        const isRetryable = /429|413|500|503|rate.limit|timeout|exhausted|No providers/i.test(errMsg)
+        const isRetryable = /429|500|503|504|rate.limit|timeout|exhausted|No providers/i.test(errMsg)
           || isCascadable400(errMsg);
 
         if (isRetryable) {
