@@ -1,0 +1,21 @@
+{
+  "name": "@datchi/text-analysis",
+  "version": "1.0.0",
+  "description": "Text Analysis API - AI-powered summarization, briefs, and analysis",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

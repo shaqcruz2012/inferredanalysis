@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import type { Address } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import type { GatewayPricing, GatewayTier, PaymentRequirement } from "./types.js";
 
 const USDC_ADDRESS: Address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -19,21 +20,26 @@ export function usdToAtomic(usd: number): string {
   return String(Math.round(usd * 1_000_000));
 }
 
-/** Load wallet address from ~/.automaton/wallet.json */
+/** Load wallet address from ~/.automaton/wallet.json or GATEWAY_WALLET_ADDRESS env */
 function loadWalletAddress(): Address {
+  // Try deriving from wallet.json private key first
   try {
-    const walletPath = path.join(os.homedir(), ".automaton", "wallet.json");
+    const walletPath = process.env.WALLET_PATH ?? path.join(os.homedir(), ".automaton", "wallet.json");
     const raw = fs.readFileSync(walletPath, "utf-8");
     const wallet = JSON.parse(raw);
     if (wallet.privateKey) {
-      // Derive address from private key would be ideal but for now use env/known
+      const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
+      return account.address;
     }
   } catch {
-    // Fall through to env var or hardcoded
+    // Fall through to env var
   }
+
   const addr = process.env.GATEWAY_WALLET_ADDRESS;
   if (!addr) {
-    throw new Error("GATEWAY_WALLET_ADDRESS env var is required");
+    throw new Error(
+      "No wallet found. Either create ~/.automaton/wallet.json or set GATEWAY_WALLET_ADDRESS env var.",
+    );
   }
   return addr as Address;
 }
