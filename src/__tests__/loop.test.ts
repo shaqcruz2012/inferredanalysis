@@ -20,6 +20,37 @@ vi.mock("../local/treasury.js", async (importOriginal) => {
   };
 });
 
+// Mock the cascade controller to avoid real provider HTTP calls.
+// The real CascadeController tries free_cloud and local pools (Mistral, Ollama)
+// before falling back to the test's MockInferenceClient, causing timeouts.
+vi.mock("../inference/cascade-controller.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../inference/cascade-controller.js")>();
+  return {
+    ...actual,
+    CascadeController: class MockCascadeController {
+      async infer(
+        request: any,
+        _router: any,
+        inferenceChat: (messages: any[], options: any) => Promise<any>,
+      ) {
+        // Directly delegate to the test's MockInferenceClient callback
+        const resp = await inferenceChat(request.messages, {});
+        return {
+          content: resp.message?.content ?? "",
+          model: resp.model ?? "mock-model",
+          provider: "conway" as const,
+          inputTokens: resp.usage?.promptTokens ?? 0,
+          outputTokens: resp.usage?.completionTokens ?? 0,
+          costCents: 0,
+          latencyMs: 0,
+          toolCalls: resp.toolCalls ?? resp.message?.tool_calls,
+          finishReason: resp.finishReason ?? "stop",
+        };
+      }
+    },
+  };
+});
+
 import { runAgentLoop } from "../agent/loop.js";
 import {
   MockInferenceClient,
