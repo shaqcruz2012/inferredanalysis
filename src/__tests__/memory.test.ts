@@ -276,6 +276,196 @@ describe("EpisodicMemoryManager", () => {
     expect(underResults).toHaveLength(1);
     expect(underResults[0].summary).toBe("file_name test");
   });
+
+  it("record() stores all fields correctly", () => {
+    const id = ep.record({
+      sessionId: "s_full",
+      eventType: "tool:deploy",
+      summary: "Deployed to production",
+      detail: "Deployed v2.3.1 to us-east-1",
+      outcome: "success",
+      importance: 0.95,
+      embeddingKey: "emb_abc123",
+      classification: "strategic",
+    });
+
+    const entries = ep.getRecent("s_full", 1);
+    expect(entries).toHaveLength(1);
+    const e = entries[0];
+    expect(e.id).toBe(id);
+    expect(e.sessionId).toBe("s_full");
+    expect(e.eventType).toBe("tool:deploy");
+    expect(e.summary).toBe("Deployed to production");
+    expect(e.detail).toBe("Deployed v2.3.1 to us-east-1");
+    expect(e.outcome).toBe("success");
+    expect(e.importance).toBe(0.95);
+    expect(e.embeddingKey).toBe("emb_abc123");
+    expect(e.classification).toBe("strategic");
+    expect(e.tokenCount).toBeGreaterThan(0);
+    expect(e.accessedCount).toBe(0);
+    expect(e.createdAt).toBeTruthy();
+  });
+
+  it("record() applies default values for optional fields", () => {
+    ep.record({
+      sessionId: "s_defaults",
+      eventType: "test",
+      summary: "Minimal entry",
+    });
+
+    const entries = ep.getRecent("s_defaults", 1);
+    expect(entries).toHaveLength(1);
+    const e = entries[0];
+    expect(e.detail).toBeNull();
+    expect(e.outcome).toBeNull();
+    expect(e.importance).toBe(0.5);
+    expect(e.embeddingKey).toBeNull();
+    expect(e.classification).toBe("maintenance");
+  });
+
+  it("getRecent() returns entries ordered by created_at DESC", () => {
+    // Insert entries with explicit timestamps via raw SQL to guarantee ordering
+    const stmt = db.prepare(
+      `INSERT INTO episodic_memory (id, session_id, event_type, summary, importance, token_count, classification, created_at)
+       VALUES (?, ?, ?, ?, 0.5, 10, 'maintenance', ?)`,
+    );
+    stmt.run("id_oldest", "s_order", "test", "Oldest", "2025-01-01 00:00:00");
+    stmt.run("id_middle", "s_order", "test", "Middle", "2025-06-01 00:00:00");
+    stmt.run("id_newest", "s_order", "test", "Newest", "2025-12-01 00:00:00");
+
+    const entries = ep.getRecent("s_order", 10);
+    expect(entries).toHaveLength(3);
+    expect(entries[0].summary).toBe("Newest");
+    expect(entries[1].summary).toBe("Middle");
+    expect(entries[2].summary).toBe("Oldest");
+  });
+
+  it("getRecent() respects limit parameter returning fewer entries", () => {
+    for (let i = 0; i < 10; i++) {
+      ep.record({ sessionId: "s_limit", eventType: "test", summary: `Event ${i}` });
+    }
+
+    expect(ep.getRecent("s_limit", 1)).toHaveLength(1);
+    expect(ep.getRecent("s_limit", 5)).toHaveLength(5);
+    expect(ep.getRecent("s_limit", 10)).toHaveLength(10);
+    expect(ep.getRecent("s_limit", 20)).toHaveLength(10); // only 10 exist
+  });
+
+  it("getRecent() defaults to limit of 10", () => {
+    for (let i = 0; i < 15; i++) {
+      ep.record({ sessionId: "s_deflimit", eventType: "test", summary: `Event ${i}` });
+    }
+    expect(ep.getRecent("s_deflimit")).toHaveLength(10);
+  });
+
+  it("search() finds entries matching in detail field", () => {
+    ep.record({
+      sessionId: "s_detail",
+      eventType: "test",
+      summary: "Generic summary",
+      detail: "The deploy target was us-west-2 region",
+    });
+    ep.record({
+      sessionId: "s_detail",
+      eventType: "test",
+      summary: "Another summary",
+      detail: "Nothing relevant here",
+    });
+
+    const results = ep.search("us-west-2");
+    expect(results).toHaveLength(1);
+    expect(results[0].detail).toContain("us-west-2");
+  });
+
+  it("search() with no matches returns empty array", () => {
+    ep.record({ sessionId: "s1", eventType: "test", summary: "Hello world" });
+    ep.record({ sessionId: "s1", eventType: "test", summary: "Foo bar baz" });
+
+    const results = ep.search("zzz_nonexistent_query_zzz");
+    expect(results).toEqual([]);
+  });
+
+  it("search() orders results by importance DESC then created_at DESC", () => {
+    ep.record({ sessionId: "s_imp", eventType: "test", summary: "deploy low", importance: 0.2 });
+    ep.record({ sessionId: "s_imp", eventType: "test", summary: "deploy high", importance: 0.9 });
+    ep.record({ sessionId: "s_imp", eventType: "test", summary: "deploy mid", importance: 0.5 });
+
+    const results = ep.search("deploy");
+    expect(results).toHaveLength(3);
+    expect(results[0].summary).toBe("deploy high");
+    expect(results[1].summary).toBe("deploy mid");
+    expect(results[2].summary).toBe("deploy low");
+  });
+
+  it("summarizeSession() with no entries returns default message", () => {
+    const summary = ep.summarizeSession("nonexistent_session");
+    expect(summary).toBe("No activity recorded for this session.");
+  });
+
+  it("summarizeSession() caps at 1000 entries", () => {
+    // Insert 1005 entries via raw SQL for speed
+    const stmt = db.prepare(
+      `INSERT INTO episodic_memory (id, session_id, event_type, summary, importance, token_count, classification)
+       VALUES (?, 's_cap', 'test', ?, 0.5, 5, 'maintenance')`,
+    );
+    const insertMany = db.transaction(() => {
+      for (let i = 0; i < 1005; i++) {
+        stmt.run(`cap_${String(i).padStart(5, "0")}`, `Event ${i}`);
+      }
+    });
+    insertMany();
+
+    const summary = ep.summarizeSession("s_cap");
+    // The summary should reference exactly 1000 events, not 1005
+    expect(summary).toContain("1000 recorded event(s)");
+  });
+
+  it("summarizeSession() includes strategic classification count", () => {
+    ep.record({ sessionId: "s_strat", eventType: "decision", summary: "Chose pricing model", outcome: "neutral", importance: 0.9, classification: "strategic" });
+    ep.record({ sessionId: "s_strat", eventType: "decision", summary: "Selected target market", outcome: "success", importance: 0.8, classification: "strategic" });
+    ep.record({ sessionId: "s_strat", eventType: "tool:exec", summary: "Ran build", outcome: "success", importance: 0.3, classification: "productive" });
+
+    const summary = ep.summarizeSession("s_strat");
+    expect(summary).toContain("3 recorded event");
+    expect(summary).toContain("2 successful outcome");
+    expect(summary).toContain("2 strategic decision");
+  });
+
+  it("summarizeSession() lists top 3 most important events as key events", () => {
+    ep.record({ sessionId: "s_top", eventType: "low", summary: "Low priority task", importance: 0.1 });
+    ep.record({ sessionId: "s_top", eventType: "high", summary: "Critical deployment", importance: 0.95 });
+    ep.record({ sessionId: "s_top", eventType: "med", summary: "Routine check", importance: 0.5 });
+    ep.record({ sessionId: "s_top", eventType: "highest", summary: "Revenue milestone", importance: 1.0 });
+
+    const summary = ep.summarizeSession("s_top");
+    expect(summary).toContain("Key events:");
+    expect(summary).toContain("[highest] Revenue milestone");
+    expect(summary).toContain("[high] Critical deployment");
+    expect(summary).toContain("[med] Routine check");
+    // Low priority should NOT be in top 3
+    expect(summary).not.toContain("[low] Low priority task");
+  });
+
+  it("importance filtering: getRecent returns entries of all importance levels", () => {
+    ep.record({ sessionId: "s_filt", eventType: "test", summary: "Low imp", importance: 0.1 });
+    ep.record({ sessionId: "s_filt", eventType: "test", summary: "High imp", importance: 0.9 });
+    ep.record({ sessionId: "s_filt", eventType: "test", summary: "Default imp" });
+
+    const all = ep.getRecent("s_filt", 10);
+    expect(all).toHaveLength(3);
+    const importances = all.map((e) => e.importance).sort();
+    expect(importances).toEqual([0.1, 0.5, 0.9]);
+  });
+
+  it("importance filtering: search orders higher importance entries first", () => {
+    ep.record({ sessionId: "s_ifilt", eventType: "test", summary: "alpha task", importance: 0.3 });
+    ep.record({ sessionId: "s_ifilt", eventType: "test", summary: "alpha critical", importance: 0.95 });
+
+    const results = ep.search("alpha");
+    expect(results).toHaveLength(2);
+    expect(results[0].importance).toBe(0.95);
+    expect(results[1].importance).toBe(0.3);
+  });
 });
 
 // ─── Semantic Memory Tests ────────────────────────────────────
