@@ -603,16 +603,14 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
 
   // === Phase 5b: Model registry refresh — record local model count ===
   refresh_models: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    // Record model refresh timestamp using provider registry
     try {
-      const { getModelRegistry } = await import("../inference/model-registry.js");
-      const models = getModelRegistry();
-      const count = Array.isArray(models) ? models.length : Object.keys(models).length;
+      const { DEFAULT_PROVIDERS } = await import("../inference/provider-registry.js");
       taskCtx.db.setKV("last_model_refresh", JSON.stringify({
         timestamp: new Date().toISOString(),
-        count,
+        count: DEFAULT_PROVIDERS.length,
       }));
     } catch {
-      // If model registry not available, record with count 0
       taskCtx.db.setKV("last_model_refresh", JSON.stringify({
         timestamp: new Date().toISOString(),
         count: 1,

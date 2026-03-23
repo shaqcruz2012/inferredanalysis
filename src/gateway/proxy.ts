@@ -100,7 +100,7 @@ export function proxyRequest(req: ProxyRequest): Promise<ProxyResponse> {
       }
       proxyReq.end();
     } catch (err: unknown) {
-      logger.error("Backend proxy request failed", { error: err instanceof Error ? err.message : String(err) });
+      logger.error("Backend proxy request failed", err instanceof Error ? err : undefined);
       resolve({
         status: 503,
         headers: {},
