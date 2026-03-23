@@ -51,3 +51,4 @@ lerna-debug.log*
 # Automaton
 .automaton/wallet.json
 .automaton/state.db
+.omc/
