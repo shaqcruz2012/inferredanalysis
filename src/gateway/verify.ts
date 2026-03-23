@@ -122,10 +122,10 @@ export async function verifyX402Signature(
       signerAddress: authorization.from as Address,
       amountAtomic: paymentAmount,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return {
       valid: false,
-      error: `Signature verification error: ${err?.message || String(err)}`,
+      error: `Signature verification error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

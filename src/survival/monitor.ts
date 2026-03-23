@@ -6,6 +6,7 @@
  * Survival tiers are derived from on-chain USDC balance + daily burn rate.
  */
 
+import { createLogger } from "../observability/logger.js";
 import type {
   AutomatonConfig,
   AutomatonDatabase,
@@ -47,7 +48,7 @@ export async function checkResources(
       usdcBalance = result.balanceUsd;
       balanceCents = result.balanceCents;
     }
-  } catch (err) { console.warn("[monitor] Balance fetch failed:", err instanceof Error ? err.message : err); }
+  } catch (err) { createLogger("survival.monitor").warn("Balance fetch failed", { error: err instanceof Error ? err.message : String(err) }); }
 
   // creditsCents now equals the USDC balance in cents
   const creditsCents = balanceCents;
@@ -71,7 +72,7 @@ export async function checkResources(
   let dailyBurnCents = 0;
   try {
     dailyBurnCents = estimateDailyBurnCents(db.raw);
-  } catch (err) { console.warn("[monitor] Burn rate estimation failed:", err instanceof Error ? err.message : err); }
+  } catch (err) { createLogger("survival.monitor").warn("Burn rate estimation failed", { error: err instanceof Error ? err.message : String(err) }); }
 
   const tier = getSurvivalTierFromBalance(creditsCents, dailyBurnCents);
   const prevTierStr = db.getKV("current_tier");

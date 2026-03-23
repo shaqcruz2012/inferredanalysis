@@ -1278,6 +1278,11 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
       return { shouldWake: false };
     }
 
+    if (!taskCtx.identity.account) {
+      logger.warn("creator_tax: no wallet account available, skipping transfer");
+      return { shouldWake: false };
+    }
+
     try {
       logger.info(
         `creator_tax: transferring ${taxAmount}¢ ($${(taxAmount / 100).toFixed(2)}) to creator ${creatorAddress} ` +

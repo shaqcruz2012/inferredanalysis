@@ -111,6 +111,8 @@ describe("UnifiedInferenceClient", () => {
     process.env.OPENAI_API_KEY = "test-openai-key";
     process.env.GROQ_API_KEY = "test-groq-key";
     process.env.MISTRAL_API_KEY = "test-mistral-key";
+    // Ensure Anthropic key is not leaked from other tests
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   afterAll(() => {

@@ -30,8 +30,8 @@ function main() {
     const wallet = JSON.parse(walletRaw);
     account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
     console.log(`[gateway] Wallet loaded: ${account.address}`);
-  } catch (err: any) {
-    console.error(`[gateway] Failed to load wallet from ${WALLET_PATH}: ${err.message}`);
+  } catch (err: unknown) {
+    console.error(`[gateway] Failed to load wallet from ${WALLET_PATH}: ${err instanceof Error ? err.message : String(err)}`);
     console.error("[gateway] On-chain execution will be disabled.");
   }
 

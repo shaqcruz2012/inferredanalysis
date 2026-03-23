@@ -62,7 +62,9 @@ export async function buildTickContext(
   let dailyBurnCents = 0;
   try {
     dailyBurnCents = estimateDailyBurnCents(db);
-  } catch {}
+  } catch (err: unknown) {
+    logger.warn("Burn rate estimation failed in tick context", { error: err instanceof Error ? err.message : String(err) });
+  }
 
   const survivalTier = getSurvivalTierFromBalance(creditBalance, dailyBurnCents);
   const lowComputeMultiplier = config.lowComputeMultiplier ?? 4;

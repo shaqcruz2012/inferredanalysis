@@ -33,7 +33,11 @@ function loadWalletAddress(): Address {
   }
   const addr = process.env.GATEWAY_WALLET_ADDRESS;
   if (!addr) {
-    // Default to a placeholder address for development/testing
+    // Placeholder for dev/testing — payments won't route correctly without a real address.
+    // In production, set GATEWAY_WALLET_ADDRESS to your USDC receiving address.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("GATEWAY_WALLET_ADDRESS env var is required in production");
+    }
     return "0x0000000000000000000000000000000000000001" as Address;
   }
   return addr as Address;

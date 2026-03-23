@@ -10,6 +10,7 @@
  */
 
 import type BetterSqlite3 from "better-sqlite3";
+import { createLogger } from "../../observability/logger.js";
 import { logRevenue, logExpense } from "../../local/accounting.js";
 
 type Database = BetterSqlite3.Database;
@@ -54,7 +55,7 @@ export function verifyPayment(
 
   // STUB: In production, verify the payment amount covers the tier price.
   // For now, any non-empty proof is accepted when explicitly opted in.
-  console.warn(
+  createLogger("payment-gate").warn(
     "STUB: Payment verification is not fully implemented. Accepting non-empty proof as valid.",
   );
   return { verified: true };

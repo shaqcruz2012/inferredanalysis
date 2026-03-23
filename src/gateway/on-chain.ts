@@ -124,7 +124,7 @@ export async function executeTransferOnChain(
         nonce: params.nonce,
       },
     });
-  } catch (err: any) {
-    markNonceFailed(db, params.nonce, err?.message || String(err));
+  } catch (err: unknown) {
+    markNonceFailed(db, params.nonce, err instanceof Error ? err.message : String(err));
   }
 }

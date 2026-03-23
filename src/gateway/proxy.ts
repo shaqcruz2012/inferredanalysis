@@ -5,6 +5,9 @@
  * service and returns the response.
  */
 import http from "http";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("gateway.proxy");
 
 interface ProxyRequest {
   backend: string;  // e.g., "http://127.0.0.1:9000"
@@ -79,7 +82,8 @@ export function proxyRequest(req: ProxyRequest): Promise<ProxyResponse> {
         proxyReq.write(req.body);
       }
       proxyReq.end();
-    } catch {
+    } catch (err: unknown) {
+      logger.error("Backend proxy request failed", { error: err instanceof Error ? err.message : String(err) });
       resolve({
         status: 503,
         headers: {},
