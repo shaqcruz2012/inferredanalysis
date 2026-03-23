@@ -2,7 +2,7 @@
  * Survival Error-Logging Tests
  *
  * Verifies that catch blocks in funding.ts and monitor.ts log errors
- * via console.warn instead of silently swallowing them.
+ * via the logger instead of silently swallowing them.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -13,6 +13,21 @@ import {
   createTestConfig,
 } from "./mocks.js";
 import type { AutomatonDatabase } from "../types.js";
+
+// Capture logger.warn calls — must be hoisted before vi.mock
+const { mockWarn } = vi.hoisted(() => {
+  const mockWarn = vi.fn();
+  return { mockWarn };
+});
+
+vi.mock("../observability/logger.js", () => ({
+  createLogger: () => ({
+    info: vi.fn(),
+    warn: mockWarn,
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+}));
 
 // Mock treasury module so we can force getOnChainBalance to throw
 vi.mock("../local/treasury.js", async (importOriginal) => {
@@ -46,12 +61,11 @@ import { estimateDailyBurnCents } from "../local/accounting.js";
 describe("survival error logging", () => {
   let db: AutomatonDatabase;
   let conway: MockConwayClient;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     db = createTestDb();
     conway = new MockConwayClient();
-    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockWarn.mockClear();
     vi.mocked(getOnChainBalance).mockReset();
     vi.mocked(estimateDailyBurnCents).mockReset();
     // Default: succeed
@@ -65,7 +79,6 @@ describe("survival error logging", () => {
 
   afterEach(() => {
     db.close();
-    warnSpy.mockRestore();
   });
 
   // ─── funding.ts ───────────────────────────────────────────────
@@ -80,9 +93,8 @@ describe("survival error logging", () => {
     // Should not throw — error is caught internally
     await executeFundingStrategies("low_compute", identity, config, db, conway);
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[funding] Balance fetch failed:",
-      "RPC timeout",
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.stringContaining("Balance fetch failed: RPC timeout"),
     );
   });
 
@@ -96,9 +108,8 @@ describe("survival error logging", () => {
 
     await checkResources(identity, conway, db);
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[monitor] Balance fetch failed:",
-      "Network unreachable",
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.stringContaining("Balance fetch failed: Network unreachable"),
     );
   });
 
@@ -114,9 +125,8 @@ describe("survival error logging", () => {
 
     await checkResources(identity, conway, db);
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[monitor] Burn rate estimation failed:",
-      "Corrupt ledger data",
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.stringContaining("Corrupt ledger data"),
     );
   });
 });
