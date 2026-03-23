@@ -170,7 +170,7 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
     name: "Groq",
     baseUrl: "https://api.groq.com/openai/v1",
     apiKeyEnvVar: "GROQ_API_KEY",
-    pool: "free_cloud",
+    pool: "paid",
     models: [
       {
         id: "llama-3.3-70b-versatile",

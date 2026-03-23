@@ -355,22 +355,21 @@ export class CascadeController {
    * Select the starting pool based on survival tier, profitability, and task type.
    */
   selectPool(tier: SurvivalTier, taskType?: string): CascadePool {
-    // Dead/critical: zero-cost local inference only (survive at all costs)
-    if (tier === "dead" || tier === "critical") {
-      return "local";
-    }
-
-    // Groq free tier only works for small-context tasks (heartbeat_triage ~5K tokens).
-    // Agent turns accumulate large conversation context that exceeds Groq's TPM limits,
-    // causing 413 on every attempt. Route only triage to free_cloud; everything else
-    // goes straight to paid to avoid wasted cascade latency.
-    if (taskType === "heartbeat_triage") {
-      logger.debug(`Cascade: tier=${tier}, task=${taskType} -> FREE_CLOUD pool (Groq triage)`);
+    // Restricted tiers: use free_cloud to minimize cost
+    if (tier === "dead" || tier === "critical" || tier === "low_compute") {
+      logger.debug(`Cascade: tier=${tier} -> FREE_CLOUD pool (restricted tier)`);
       return "free_cloud";
     }
 
-    logger.debug(`Cascade: tier=${tier}, task=${taskType} -> PAID pool (skip Groq for large context)`);
-    return "paid";
+    // For normal/high tiers: check profitability
+    const pnl = this.getRollingPnl();
+    if (pnl.netCents > 0) {
+      logger.debug(`Cascade: tier=${tier}, net=$${(pnl.netCents / 100).toFixed(2)} -> PAID pool (profitable)`);
+      return "paid";
+    }
+
+    logger.debug(`Cascade: tier=${tier}, net=$${(pnl.netCents / 100).toFixed(2)} -> FREE_CLOUD pool (unprofitable)`);
+    return "free_cloud";
   }
 
   /**

@@ -10,8 +10,8 @@ import type { CascadePool } from "../types.js";
 import { DEFAULT_PROVIDERS, type ProviderConfig } from "./provider-registry.js";
 
 /** The order in which pools are tried when the current pool is exhausted.
- *  free_cloud (Groq) first to minimize paid API usage, then local, then paid as last resort. */
-export const POOL_CASCADE_ORDER: CascadePool[] = ["free_cloud", "local", "paid"];
+ *  paid first for best quality, then free_cloud as fallback, then local as last resort. */
+export const POOL_CASCADE_ORDER: CascadePool[] = ["paid", "free_cloud", "local"];
 
 /**
  * Return providers belonging to a specific pool.

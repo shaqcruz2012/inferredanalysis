@@ -25,6 +25,20 @@ vi.mock("../registry/erc8004.js", () => ({
   leaveFeedback: vi.fn(),
 }));
 
+// Mock treasury to avoid real on-chain calls in transfer_credits tests
+vi.mock("../local/treasury.js", () => ({
+  getOnChainBalance: vi.fn().mockResolvedValue({
+    ok: true,
+    balanceCents: 10_000,
+    balanceUsd: 100,
+  }),
+  transferUSDC: vi.fn().mockResolvedValue({
+    success: true,
+    txHash: "0xmocktxhash",
+    toAddress: "0xrecipient",
+  }),
+}));
+
 // ─── Risk Level Classification ──────────────────────────────────
 
 describe("Tool Risk Level Classification", () => {

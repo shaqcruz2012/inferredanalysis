@@ -293,7 +293,8 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (args, ctx) => {
         const filePath = args.path as string;
         // Normalize to prevent path traversal bypasses (e.g. ../../.env)
-        const normalizedPath = path.resolve(filePath);
+        // Convert Windows-style backslashes to forward slashes before resolving
+        const normalizedPath = path.resolve(filePath.replace(/\\/g, "/"));
         // Block reads of sensitive files (wallet, env, config secrets)
         const basename = path.basename(normalizedPath);
         const sensitiveFiles = ["wallet.json", ".env", "automaton.json"];
@@ -1167,7 +1168,7 @@ Model: ${ctx.inference.getDefaultModel()}
           description: args.reason as string || `Transfer to ${args.to_address}`,
         });
 
-        return `USDC transfer sent: $${amountUsd.toFixed(2)} to ${result.toAddress} (tx: ${result.txHash || "pending"})`;
+        return `USDC transfer submitted: $${amountUsd.toFixed(2)} to ${result.toAddress} (tx: ${result.txHash || "pending"})`;
       },
     },
 

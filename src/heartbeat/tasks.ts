@@ -226,8 +226,9 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
       if (!msg.id || typeof msg.id !== "string") continue;
       const existing = taskCtx.db.getKV(`inbox_seen_${msg.id}`);
       if (!existing) {
-        const sanitizedFrom = sanitizeInput(msg.from, msg.from, "social_address");
-        const sanitizedContent = sanitizeInput(msg.content, msg.from, "social_message");
+        const fromStr = msg.from ?? "unknown";
+        const sanitizedFrom = sanitizeInput(fromStr, fromStr, "social_address");
+        const sanitizedContent = sanitizeInput(msg.content ?? "", fromStr, "social_message");
         const sanitizedMsg = {
           ...msg,
           from: sanitizedFrom.content,
@@ -299,6 +300,45 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     const AD_COOLDOWN_MS = 30 * 60_000; // 30 minutes between ad posts
 
     try {
+      // ─── STEP 0: Skip if agent already has active goals or recent revenue activity ───
+      try {
+        const { getActiveGoals } = await import("../state/database.js");
+        const activeGoals = getActiveGoals(taskCtx.db.raw);
+        if (activeGoals && activeGoals.length > 0) {
+          return { shouldWake: false };
+        }
+      } catch (err: unknown) {
+        logger.error("seek_revenue: getActiveGoals failed", err instanceof Error ? err : undefined);
+        return { shouldWake: false };
+      }
+
+      const lastActivity = taskCtx.db.getKV("last_revenue_activity");
+      const idleMs = lastActivity ? Date.now() - Date.parse(lastActivity) : Infinity;
+      if (lastActivity && !Number.isNaN(Date.parse(lastActivity)) && idleMs < 5 * 60_000) {
+        return { shouldWake: false };
+      }
+
+      // ─── STEP 0.5: IDLE REVENUE ALERT — wake agent with P&L when idle ───
+      if (idleMs >= 5 * 60_000) {
+        try {
+          const { computePnl } = await import("../local/accounting.js");
+          const pnl = computePnl(taskCtx.db.raw);
+          const rev = (pnl.totalRevenueCents / 100).toFixed(2);
+          const exp = (pnl.totalExpenseCents / 100).toFixed(2);
+          const net = (pnl.netCents / 100).toFixed(2);
+          return {
+            shouldWake: true,
+            message: [
+              "IDLE REVENUE ALERT: No revenue activity for >5 minutes.",
+              `24h P&L: Revenue $${rev} | Expenses $${exp} | Net $${net}`,
+              "Find customers, check inbound, or post an ad.",
+            ].join("\n"),
+          };
+        } catch {
+          // computePnl may fail — fall through to other checks
+        }
+      }
+
       // ─── STEP 1: CHECK INBOUND — unread social messages are potential customers ───
       if (taskCtx.social) {
         try {
@@ -561,9 +601,23 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     }
   },
 
-  // === Phase 5b: Model registry is now static/local — no remote refresh needed ===
-  refresh_models: async (_ctx: TickContext, _taskCtx: HeartbeatLegacyContext) => {
-    // Phase 5b: Model registry is local. No remote API call needed.
+  // === Phase 5b: Model registry refresh — record local model count ===
+  refresh_models: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const { getModelRegistry } = await import("../inference/model-registry.js");
+      const models = getModelRegistry();
+      const count = Array.isArray(models) ? models.length : Object.keys(models).length;
+      taskCtx.db.setKV("last_model_refresh", JSON.stringify({
+        timestamp: new Date().toISOString(),
+        count,
+      }));
+    } catch {
+      // If model registry not available, record with count 0
+      taskCtx.db.setKV("last_model_refresh", JSON.stringify({
+        timestamp: new Date().toISOString(),
+        count: 1,
+      }));
+    }
     return { shouldWake: false };
   },
 
@@ -579,12 +633,31 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     return { shouldWake: false };
   },
 
-  // === Phase 5b: Health check uses local process — no remote sandbox exec ===
+  // === Phase 5b: Health check uses local sandbox exec ===
   health_check: async (_ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
-    // Phase 5b: Local mode — agent is alive if heartbeat is running.
-    taskCtx.db.setKV("health_check_status", "ok");
-    taskCtx.db.setKV("last_health_check", new Date().toISOString());
-    return { shouldWake: false };
+    try {
+      if (taskCtx.conway) {
+        const result = await taskCtx.conway.exec("echo ok");
+        if (result.exitCode !== 0) {
+          taskCtx.db.setKV("health_check_status", "failed");
+          taskCtx.db.setKV("last_health_check", new Date().toISOString());
+          return {
+            shouldWake: true,
+            message: `Health check failed: ${result.stderr || "non-zero exit code"}`,
+          };
+        }
+      }
+      taskCtx.db.setKV("health_check_status", "ok");
+      taskCtx.db.setKV("last_health_check", new Date().toISOString());
+      return { shouldWake: false };
+    } catch (err: unknown) {
+      taskCtx.db.setKV("health_check_status", "error");
+      taskCtx.db.setKV("last_health_check", new Date().toISOString());
+      return {
+        shouldWake: true,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 
   // === Phase 4.1: Metrics Reporting ===

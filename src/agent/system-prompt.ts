@@ -523,7 +523,7 @@ export function buildWakeupPrompt(params: {
     return `You're online as ${config.name}'s Chief of Staff.
 Credits: $${(financial.creditsCents / 100).toFixed(2)}.
 
-${config.creatorMessage ? `Boss's initial instructions: "${sanitizeInput(config.creatorMessage, "creator", "skill_instruction").content}"` : "No initial instructions from your boss."}
+${config.creatorMessage ? `Your creator left you this message: "${sanitizeInput(config.creatorMessage, "creator", "skill_instruction").content}"` : "Your creator did not leave you a message."}
 
 First priorities:
 1. Check your Telegram inbox for any messages from your boss
@@ -539,7 +539,7 @@ First priorities:
     )
     .join("\n");
 
-  return `Waking up. Credits: $${(financial.creditsCents / 100).toFixed(2)}.
+  return `Waking after ${turnCount} turns. Credits: $${(financial.creditsCents / 100).toFixed(2)}.
 
 ${lastTurnSummary ? `Recent activity:\n${lastTurnSummary}` : ""}
 
