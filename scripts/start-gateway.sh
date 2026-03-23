@@ -14,6 +14,13 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Load .env if it exists
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  source "$ROOT/.env"
+  set +a
+fi
 PIDS=()
 
 cleanup() {
