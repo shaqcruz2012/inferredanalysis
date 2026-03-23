@@ -151,7 +151,8 @@ export function createTokenCounter(): TokenCounter {
     }
 
     let count: number;
-    if (encoder) {
+    // Skip expensive tiktoken encoding for large texts (>5KB) — use heuristic
+    if (encoder && normalizedText.length <= 5_000) {
       try {
         count = encoder.encode(normalizedText).length;
       } catch {

@@ -64,6 +64,11 @@ export function validateUrl(raw: string): void {
 const SERVICE_PORT = parseInt(process.env.URL_SUMMARIZER_PORT ?? "9003", 10);
 const SERVICE_BASE = `http://localhost:${SERVICE_PORT}`;
 
+/** Cached health status with TTL to avoid blocking every request */
+let cachedHealthy: boolean | null = null;
+let healthCheckedAt = 0;
+const HEALTH_CACHE_TTL_MS = 30_000; // 30 seconds
+
 /** Price charged per summary call (cents) */
 const PRICE_PER_CALL_CENTS = 1; // $0.01
 
@@ -211,20 +216,61 @@ export async function summarizeUrlForClient(
   }
 }
 
-/** Quick health check for the summarizer service */
+/** Quick health check for the summarizer service (cached with TTL) */
 async function checkServiceHealth(): Promise<boolean> {
+  const now = Date.now();
+  if (cachedHealthy !== null && now - healthCheckedAt < HEALTH_CACHE_TTL_MS) {
+    return cachedHealthy;
+  }
   try {
     const res = await fetch(`${SERVICE_BASE}/health`, {
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok;
+    cachedHealthy = res.ok;
   } catch {
-    return false;
+    cachedHealthy = false;
+  }
+  healthCheckedAt = now;
+  return cachedHealthy;
+}
+
+/** Reset health cache (for testing) */
+export function resetHealthCache(): void {
+  cachedHealthy = null;
+  healthCheckedAt = 0;
+}
+
+/**
+ * In-memory stats accumulator — batched to DB every FLUSH_INTERVAL calls
+ * or FLUSH_TIMEOUT_MS, whichever comes first. Eliminates per-request
+ * JSON parse → modify → serialize → write round-trip.
+ */
+const STATS_FLUSH_INTERVAL = 50;  // flush every N calls
+const STATS_FLUSH_TIMEOUT_MS = 60_000; // or every 60s
+
+let pendingStats = { total: 0, success: 0, failure: 0, latencySum: 0 };
+let lastFlushTime = Date.now();
+
+/** Update skill stats — accumulates in memory, flushes periodically */
+function updateStats(db: Database, success: boolean, latencyMs: number): void {
+  pendingStats.total += 1;
+  pendingStats.success += success ? 1 : 0;
+  pendingStats.failure += success ? 0 : 1;
+  pendingStats.latencySum += latencyMs;
+
+  const now = Date.now();
+  if (pendingStats.total >= STATS_FLUSH_INTERVAL || now - lastFlushTime >= STATS_FLUSH_TIMEOUT_MS) {
+    flushStats(db);
   }
 }
 
-/** Update skill stats in the state repo KV store */
-function updateStats(db: Database, success: boolean, latencyMs: number): void {
+/** Flush accumulated stats to the KV store */
+function flushStats(db: Database): void {
+  if (pendingStats.total === 0) return;
+  const batch = { ...pendingStats };
+  pendingStats = { total: 0, success: 0, failure: 0, latencySum: 0 };
+  lastFlushTime = Date.now();
+
   try {
     const rawStats = db.prepare(
       `SELECT value FROM kv WHERE key = ?`,
@@ -234,15 +280,17 @@ function updateStats(db: Database, success: boolean, latencyMs: number): void {
       ? JSON.parse(rawStats.value)
       : { total: 0, success: 0, failure: 0, avgLatencyMs: 0, lastRun: "" };
 
+    const newTotal = stats.total + batch.total;
+    const newSuccess = stats.success + batch.success;
     const updatedStats = {
-      total: stats.total + 1,
-      success: stats.success + (success ? 1 : 0),
-      failure: stats.failure + (success ? 0 : 1),
+      total: newTotal,
+      success: newSuccess,
+      failure: stats.failure + batch.failure,
       avgLatencyMs: Math.round(
-        (stats.avgLatencyMs * stats.total + latencyMs) / (stats.total + 1),
+        (stats.avgLatencyMs * stats.total + batch.latencySum) / newTotal,
       ),
       lastRun: new Date().toISOString(),
-      successRate: ((stats.success + (success ? 1 : 0)) / (stats.total + 1) * 100).toFixed(1) + "%",
+      successRate: ((newSuccess / newTotal) * 100).toFixed(1) + "%",
     };
 
     db.prepare(
@@ -251,6 +299,11 @@ function updateStats(db: Database, success: boolean, latencyMs: number): void {
   } catch {
     // Stats are best-effort, never fail the main flow
   }
+}
+
+/** Export for testing / graceful shutdown */
+export function flushPendingStats(db: Database): void {
+  flushStats(db);
 }
 
 /**

@@ -83,8 +83,14 @@ export function truncateToolResult(result: string, maxSize: number = MAX_TOOL_RE
 
 /**
  * Estimate total tokens for a single turn (input + thinking + tool calls/results).
+ * Memoized per turn via a WeakMap to avoid redundant recomputation.
  */
+const turnTokenCache = new WeakMap<AgentTurn, number>();
+
 function estimateTurnTokens(turn: AgentTurn): number {
+  const cached = turnTokenCache.get(turn);
+  if (cached !== undefined) return cached;
+
   let total = 0;
   if (turn.input) {
     total += estimateTokens(turn.input);
@@ -96,6 +102,8 @@ function estimateTurnTokens(turn: AgentTurn): number {
     total += estimateTokens(JSON.stringify(tc.arguments));
     total += estimateTokens(tc.error ? `Error: ${tc.error}` : tc.result);
   }
+
+  turnTokenCache.set(turn, total);
   return total;
 }
 

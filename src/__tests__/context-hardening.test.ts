@@ -360,7 +360,7 @@ describe("buildSystemPrompt status block", () => {
     });
 
     // Extract the status block
-    const statusStart = prompt.indexOf("--- CURRENT STATUS ---");
+    const statusStart = prompt.indexOf("--- CURRENT STATUS");
     const statusEnd = prompt.indexOf("--- END STATUS ---");
     expect(statusStart).toBeGreaterThan(-1);
     const statusBlock = prompt.slice(statusStart, statusEnd);
@@ -384,7 +384,7 @@ describe("buildSystemPrompt status block", () => {
       isFirstRun: false,
     });
 
-    const statusStart = prompt.indexOf("--- CURRENT STATUS ---");
+    const statusStart = prompt.indexOf("--- CURRENT STATUS");
     const statusEnd = prompt.indexOf("--- END STATUS ---");
     const statusBlock = prompt.slice(statusStart, statusEnd);
 
@@ -407,7 +407,7 @@ describe("buildSystemPrompt status block", () => {
       isFirstRun: false,
     });
 
-    const statusStart = prompt.indexOf("--- CURRENT STATUS ---");
+    const statusStart = prompt.indexOf("--- CURRENT STATUS");
     const statusEnd = prompt.indexOf("--- END STATUS ---");
     const statusBlock = prompt.slice(statusStart, statusEnd);
 
@@ -428,7 +428,7 @@ describe("buildSystemPrompt status block", () => {
       isFirstRun: false,
     });
 
-    const statusStart = prompt.indexOf("--- CURRENT STATUS ---");
+    const statusStart = prompt.indexOf("--- CURRENT STATUS");
     const statusEnd = prompt.indexOf("--- END STATUS ---");
     const statusBlock = prompt.slice(statusStart, statusEnd);
 
@@ -439,8 +439,20 @@ describe("buildSystemPrompt status block", () => {
     const identity = createTestIdentity();
     const config = createTestConfig();
 
-    // Low compute tier (10 < credits <= 50)
+    // Low compute tier (>= 50 cents, < 200 cents)
     let prompt = buildSystemPrompt({
+      identity,
+      config,
+      financial: { creditsCents: 75, usdcBalance: 0, lastChecked: new Date().toISOString() },
+      state: "running",
+      db,
+      tools: [],
+      isFirstRun: false,
+    });
+    expect(prompt).toContain("Survival tier: low_compute");
+
+    // Critical tier (>= 10 cents, < 50 cents)
+    prompt = buildSystemPrompt({
       identity,
       config,
       financial: { creditsCents: 30, usdcBalance: 0, lastChecked: new Date().toISOString() },
@@ -449,25 +461,13 @@ describe("buildSystemPrompt status block", () => {
       tools: [],
       isFirstRun: false,
     });
-    expect(prompt).toContain("Survival tier: low_compute");
+    expect(prompt).toContain("Survival tier: critical");
 
-    // Critical tier (0 < credits <= 10)
+    // Dead tier (< 10 cents)
     prompt = buildSystemPrompt({
       identity,
       config,
       financial: { creditsCents: 5, usdcBalance: 0, lastChecked: new Date().toISOString() },
-      state: "running",
-      db,
-      tools: [],
-      isFirstRun: false,
-    });
-    expect(prompt).toContain("Survival tier: critical");
-
-    // Dead tier (credits = 0)
-    prompt = buildSystemPrompt({
-      identity,
-      config,
-      financial: { creditsCents: 0, usdcBalance: 0, lastChecked: new Date().toISOString() },
       state: "running",
       db,
       tools: [],

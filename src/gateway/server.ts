@@ -34,7 +34,7 @@ const MAX_BODY_BYTES = 1_048_576; // 1 MB
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks: Buffer[] = [];
     let bytes = 0;
     req.on("data", (chunk: Buffer) => {
       bytes += chunk.length;
@@ -43,9 +43,9 @@ function readBody(req: http.IncomingMessage): Promise<string> {
         reject(new Error("Request body too large"));
         return;
       }
-      body += chunk;
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(body));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
