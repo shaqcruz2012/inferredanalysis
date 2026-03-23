@@ -5,7 +5,6 @@
  * locally. The agent wants to live.
  */
 
-import { createLogger } from "../observability/logger.js";
 import type {
   AutomatonConfig,
   AutomatonDatabase,
@@ -40,7 +39,7 @@ export async function executeFundingStrategies(
   try {
     const result = await getOnChainBalance(identity.address);
     if (result.ok) balanceCents = result.balanceCents;
-  } catch (err) { createLogger("survival.funding").warn("Balance fetch failed", { error: err instanceof Error ? err.message : String(err) }); }
+  } catch (err) { console.warn("[funding] Balance fetch failed:", err instanceof Error ? err.message : String(err)); }
 
   // Check how recently we last begged for this specific tier (don't spam).
   const tierKey = `last_funding_request_${tier}`;
