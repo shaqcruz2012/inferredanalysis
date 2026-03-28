@@ -24,6 +24,7 @@ import { appendTSV, initTSV } from "../shared/atomic-writer.mjs";
 import { isTradingHalted, formatBreakerBlock } from "../risk/breaker-guard.mjs";
 import { assessTradeRisk, invalidateRiskCache } from "../shared/risk-gateway.mjs";
 import { getTracker } from "../shared/portfolio-tracker.mjs";
+import { getBridge } from "../shared/fund-bridge.mjs";
 import { SmartOrderRouter } from "./smart-order-router.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -515,6 +516,29 @@ async function runPaperTrading(opts) {
   tracker.syncFromBroker(positions, account.cash, account.equity);
   console.log(`  Portfolio tracker: synced (${positions.length} positions, NAV $${tracker.getNAV().toLocaleString()})`);
 
+  // ── Fund Bridge: Check allocated capital from treasury ──
+  const bridge = getBridge();
+  const allocatedCapital = bridge.getAllocatedCapital();
+  let effectiveEquity = equity;
+
+  if (bridge.isCapitalAvailable()) {
+    // Use allocated capital as the effective equity for sizing
+    effectiveEquity = allocatedCapital;
+    const maxPosition = bridge.getMaxPositionSize();
+    console.log(`\n  Fund Bridge: ACTIVE`);
+    console.log(`    Allocated capital:  $${allocatedCapital.toFixed(2)}`);
+    console.log(`    Max position size:  $${maxPosition.toFixed(2)}`);
+    console.log(`    Effective equity:   $${effectiveEquity.toFixed(2)} (from treasury allocation)`);
+
+    // Override safety max position size with fund bridge limit
+    if (maxPosition < SAFETY.maxPositionSize) {
+      SAFETY.maxPositionSize = maxPosition;
+    }
+  } else {
+    console.log(`\n  Fund Bridge: inactive (no capital allocated or disabled)`);
+    console.log(`    Using Alpaca account equity: $${equity.toFixed(2)}`);
+  }
+
   console.log(`  Open positions: ${positions.length}`);
   console.log(`  Safety limits:  max_position=$${SAFETY.maxPositionSize} max_daily_loss=$${SAFETY.maxDailyLoss} max_positions=${SAFETY.maxOpenPositions}`);
 
@@ -724,7 +748,7 @@ async function runPaperTrading(opts) {
     const side = latestSignal.signal === 1 ? "buy" : "sell";
     const positionFraction = config.positionSize || 0.10;
     const scaledFraction = positionFraction * breakerPositionScale;
-    const tradeCapital = Math.min(equity * scaledFraction, SAFETY.maxPositionSize);
+    const tradeCapital = Math.min(effectiveEquity * scaledFraction, SAFETY.maxPositionSize);
     if (breakerPositionScale < 1.0) {
       console.log(`  Position scaled by breaker recovery: ${(positionFraction * 100).toFixed(0)}% -> ${(scaledFraction * 100).toFixed(0)}%`);
     }
@@ -885,6 +909,15 @@ async function runPaperTrading(opts) {
   console.log(`  Drawdown:         ${(trackerSummary.drawdownPct * 100).toFixed(2)}%`);
   console.log(`  Active positions: ${trackerSummary.activePositions}`);
   console.log(`  Exposure:         long=${(trackerSummary.exposure.longPct * 100).toFixed(1)}% short=${(trackerSummary.exposure.shortPct * 100).toFixed(1)}% net=${(trackerSummary.exposure.netPct * 100).toFixed(1)}%`);
+
+  // 6c. Report P&L back to fund bridge (for treasury allocator)
+  if (bridge.isCapitalAvailable()) {
+    const pnlReport = bridge.syncFromTracker({ [symbol]: latestSignal.price });
+    console.log(`\n─── Fund Bridge P&L Sync ───`);
+    console.log(`  Total P&L:     $${pnlReport.totalPnl.toFixed(2)}`);
+    console.log(`  Capital Return: ${pnlReport.capitalReturn.toFixed(2)}%`);
+    console.log(`  Max Drawdown:  ${(pnlReport.drawdownPct * 100).toFixed(2)}%`);
+  }
 
   // 7. Backtest comparison
   console.log("\n─── Backtest vs Paper Comparison ───");

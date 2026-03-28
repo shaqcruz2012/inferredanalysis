@@ -48,6 +48,7 @@ import {
 } from "./shared/self-healer.mjs";
 import { reconcile, autoResolve, getReconciliationReport, isDriftSignificant } from "./trading/reconciler.mjs";
 import { getTracker } from "./shared/portfolio-tracker.mjs";
+import { getBridge } from "./shared/fund-bridge.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -442,6 +443,27 @@ async function main() {
       log(`Reconciliation error (non-fatal): ${reconErr.message}`);
     }
 
+    // ─── Fund Bridge: Report P&L & log allocation status ──
+    try {
+      const bridge = getBridge();
+      if (bridge.isCapitalAvailable()) {
+        // Sync P&L from portfolio tracker to fund bridge state
+        const pnlSync = bridge.syncFromTracker({});
+        log(`Fund Bridge: allocated=$${bridge.getAllocatedCapital().toFixed(2)} P&L=$${pnlSync.totalPnl.toFixed(2)} ROI=${pnlSync.capitalReturn.toFixed(2)}% drawdown=${(pnlSync.drawdownPct * 100).toFixed(2)}%`);
+
+        if (bridge.isDrawdownBreached()) {
+          log(`FUND BRIDGE WARNING: Drawdown limit breached (${(pnlSync.drawdownPct * 100).toFixed(2)}%) — allocator should clawback`);
+        }
+      } else {
+        // Log once per full rotation that fund bridge is inactive
+        if (cycleCount % RESEARCH_AGENTS.length === 1) {
+          log("Fund Bridge: inactive (no capital allocated — configure config/capital-allocation.json)");
+        }
+      }
+    } catch (bridgeErr) {
+      log(`Fund Bridge error (non-fatal): ${bridgeErr.message}`);
+    }
+
     // Rotate through agents — run one per cycle to spread work
     const agentIndex = (cycleCount - 1) % RESEARCH_AGENTS.length;
     const agent = RESEARCH_AGENTS[agentIndex];
@@ -541,6 +563,12 @@ async function main() {
     // Send notification report every full rotation (after all 7 agents have run)
     if (cycleCount % RESEARCH_AGENTS.length === 0) {
       log("Full rotation complete — sending status report");
+
+      // Log fund bridge summary at each full rotation
+      try {
+        const bridgeReport = getBridge();
+        log(bridgeReport.getStatusReport());
+      } catch { /* fund bridge not critical */ }
 
       // Log self-healer summary at each full rotation
       const rotationReport = getSystemReport();

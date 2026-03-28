@@ -29,7 +29,7 @@ const ACCOUNTING_SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS expense_events (
     id TEXT PRIMARY KEY,
-    category TEXT NOT NULL CHECK(category IN ('inference','sandbox','transfer','api','other')),
+    category TEXT NOT NULL CHECK(category IN ('inference','sandbox','transfer','api','trading','other')),
     amount_cents INTEGER NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     metadata TEXT DEFAULT '{}',
@@ -86,6 +86,37 @@ export function initAccountingSchema(db: Database): void {
   safeAddColumn(db, "revenue_events", "experiment_id", "TEXT");
   safeAddColumn(db, "expense_events", "niche_id", "TEXT");
   safeAddColumn(db, "expense_events", "experiment_id", "TEXT");
+
+  // Phase 6: Capital allocator tables for treasury ↔ trading desk fund flow
+  initCapitalAllocationSchema(db);
+}
+
+/**
+ * Create the capital allocation tracking tables.
+ * Called as part of initAccountingSchema().
+ */
+function initCapitalAllocationSchema(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS trading_allocations (
+      id TEXT PRIMARY KEY,
+      direction TEXT NOT NULL CHECK(direction IN ('deploy','withdraw','harvest','clawback')),
+      amount_usd REAL NOT NULL,
+      treasury_balance_before_usd REAL NOT NULL,
+      trading_balance_before_usd REAL NOT NULL,
+      survival_tier TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      metadata TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_alloc_direction ON trading_allocations(direction);
+    CREATE INDEX IF NOT EXISTS idx_alloc_created ON trading_allocations(created_at);
+
+    CREATE TABLE IF NOT EXISTS trading_desk_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 // ── Revenue ──────────────────────────────────────────────────────
@@ -122,7 +153,7 @@ export function logRevenue(db: Database, event: RevenueEvent): string {
 
 // ── Expenses ─────────────────────────────────────────────────────
 
-export type ExpenseCategory = "inference" | "sandbox" | "transfer" | "api" | "other";
+export type ExpenseCategory = "inference" | "sandbox" | "transfer" | "api" | "trading" | "other";
 
 export interface ExpenseEvent {
   id?: string;
