@@ -13,6 +13,7 @@ import type BetterSqlite3 from "better-sqlite3";
 import type { PrivateKeyAccount } from "viem";
 import { getGatewayPricing, buildPaymentRequirement } from "./pricing.js";
 import { decodePaymentHeader, verifyX402Signature } from "./verify.js";
+import { getUnifiedDashboard, getAllocationState, loadAllocationConfig } from "../treasury/capital-allocator.js";
 import { checkNonce, reserveNonce } from "./nonces.js";
 import { proxyRequest } from "./proxy.js";
 import { executeTransferOnChain } from "./on-chain.js";
@@ -124,6 +125,32 @@ export function createGatewayServer(options: GatewayOptions) {
         usdcAddress: pricing.usdcAddress,
         tiers: pricing.tiers,
       });
+      return;
+    }
+
+    if (url === "/dashboard" && method === "GET") {
+      try {
+        const allocConfig = loadAllocationConfig();
+        if (!allocConfig.enabled) {
+          jsonResponse(res, 200, { enabled: false, message: "Capital allocation not enabled" });
+          return;
+        }
+        const dashboard = await getUnifiedDashboard(options.db, pricing.walletAddress as any);
+        jsonResponse(res, 200, dashboard);
+      } catch (err: any) {
+        jsonResponse(res, 500, { error: "Dashboard unavailable", detail: err.message });
+      }
+      return;
+    }
+
+    if (url === "/allocation" && method === "GET") {
+      try {
+        const allocConfig = loadAllocationConfig();
+        const state = getAllocationState(options.db);
+        jsonResponse(res, 200, { config: allocConfig, state });
+      } catch (err: any) {
+        jsonResponse(res, 500, { error: "Allocation state unavailable", detail: err.message });
+      }
       return;
     }
 

@@ -246,6 +246,73 @@ export class FundBridge {
     return this.state.maxDrawdownPct >= limit;
   }
 
+  // ── Bidirectional Sync ────────────────────────────────────
+
+  /**
+   * Pull latest allocation from the allocator's state file.
+   * The capital allocator writes fund-bridge-state.json when
+   * it makes allocation decisions. This method reads it and
+   * updates the bridge state to stay in sync.
+   */
+  pullFromAllocator() {
+    try {
+      if (!existsSync(this.statePath)) return false;
+
+      const raw = readFileSync(this.statePath, "utf-8");
+      const allocatorState = JSON.parse(raw);
+
+      // Only update if allocator has written to this file (version 2+)
+      if (allocatorState.version >= 2 && allocatorState.allocatedCapitalUsd !== undefined) {
+        const prevAllocated = this.state.allocatedCapitalUsd;
+        this.state.allocatedCapitalUsd = allocatorState.allocatedCapitalUsd;
+        this.state.lastSyncTimestamp = new Date().toISOString();
+
+        if (allocatorState.allocatedCapitalUsd > this.state.highWaterMarkUsd) {
+          this.state.highWaterMarkUsd = allocatorState.allocatedCapitalUsd;
+        }
+
+        if (!this.state.deployedAtTimestamp && allocatorState.allocatedCapitalUsd > 0) {
+          this.state.deployedAtTimestamp = allocatorState.deployedAtTimestamp || new Date().toISOString();
+        }
+
+        // Don't save yet — caller may want to also report P&L before saving
+        const delta = allocatorState.allocatedCapitalUsd - prevAllocated;
+        if (Math.abs(delta) > 0.01) {
+          console.log(
+            `[fund-bridge] Pulled allocation from allocator: $${prevAllocated.toFixed(2)} → $${allocatorState.allocatedCapitalUsd.toFixed(2)}` +
+            ` (${allocatorState.lastAllocationAction || "sync"}: ${allocatorState.lastAllocationReason || ""})`
+          );
+        }
+
+        return true;
+      }
+    } catch (err) {
+      console.warn(`[fund-bridge] Failed to pull from allocator: ${err.message}`);
+    }
+    return false;
+  }
+
+  /**
+   * Full sync cycle: pull allocation, sync P&L, write back.
+   * This is the recommended way to keep the bridge in sync.
+   */
+  fullSync(currentPrices = {}) {
+    // 1. Pull latest allocation from the capital allocator
+    this.pullFromAllocator();
+
+    // 2. Sync P&L from the portfolio tracker
+    const pnlReport = this.syncFromTracker(currentPrices);
+
+    // 3. Save state
+    this._saveState();
+
+    return {
+      allocatedCapital: this.state.allocatedCapitalUsd,
+      ...pnlReport,
+      drawdownBreached: this.isDrawdownBreached(),
+    };
+  }
+
   // ── Status Report ───────────────────────────────────────
 
   /**

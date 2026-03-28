@@ -1,16 +1,30 @@
 /**
- * Capital Allocator
+ * Capital Allocator — Central Fund Controller
  *
- * Bridges the API revenue treasury and the quant trading desk.
- * Decides how much USDC to deploy to trading based on:
- *   - Treasury balance and survival tier
- *   - Configurable allocation limits
- *   - Trading desk P&L performance
- *   - Drawdown clawback rules
+ * The single source of truth for capital deployment across the system.
+ * ALL USDC flows through this module:
+ *
+ *   Revenue Sources:
+ *     - x402 API payments (gateway)
+ *     - Trading desk realized P&L
+ *
+ *   Expense Sinks:
+ *     - Inference costs (LLM API calls)
+ *     - Trading capital deployment
+ *     - Creator tax distributions
+ *
+ *   Autonomous Operations:
+ *     - Auto-rebalance on configurable schedule
+ *     - Revenue-triggered deployment (new revenue → check allocation)
+ *     - Drawdown clawback (protect treasury from trading losses)
+ *     - Profit harvest (sweep trading gains back to treasury)
+ *     - Survival tier gating (reduce exposure when funds are low)
  *
  * Fund flow:
- *   API Revenue (USDC) → Treasury → Capital Allocator → Trading Desk
- *   Trading Desk P&L → Capital Allocator → Treasury (profit harvest)
+ *   API Revenue (USDC) ─┐
+ *                        ├──► Treasury ──► Capital Allocator ──► Trading Desk
+ *   Trading P&L ─────────┘        ▲                                  │
+ *                                 └── Harvest / Clawback ◄───────────┘
  *
  * All allocation decisions are logged to the accounting ledger
  * as "internal_treasury_move" transfer events for full auditability.
@@ -21,10 +35,18 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { getOnChainBalance, getSurvivalTierFromBalance } from "../local/treasury.js";
-import { logTransferEvent, estimateDailyBurnCents, computePnl } from "../local/accounting.js";
+import { getOnChainBalance, getSurvivalTierFromBalance, transferUSDC } from "../local/treasury.js";
+import {
+  logTransferEvent,
+  logRevenue,
+  logExpense,
+  estimateDailyBurnCents,
+  computePnl,
+  computeDailyNetProfit,
+} from "../local/accounting.js";
 import { createLogger } from "../observability/logger.js";
-import type { Address } from "viem";
+import { ulid } from "ulid";
+import type { Address, PrivateKeyAccount } from "viem";
 import type { SurvivalTier } from "../types.js";
 
 type Database = BetterSqlite3.Database;
@@ -404,7 +426,6 @@ export function executeAllocation(
   newAllocated = Math.round(newAllocated * 100) / 100;
 
   // Record the allocation event
-  const { ulid } = require("ulid") as { ulid: () => string };
   db.prepare(
     `INSERT INTO trading_allocations (id, direction, amount_usd, treasury_balance_before_usd,
      trading_balance_before_usd, survival_tier, reason, metadata)
@@ -546,4 +567,321 @@ export function computeCombinedPnl(
     tradingRoiPct: Math.round(tradingRoi * 100) / 100,
     period,
   };
+}
+
+// ── Auto-Rebalance Runner ───────────────────────────────────
+
+/**
+ * Full rebalance cycle: compute → execute → write fund bridge state file.
+ *
+ * This is the function heartbeat tasks and the daemon call.
+ * It handles the complete lifecycle:
+ *   1. Check if rebalance is needed
+ *   2. Compute allocation decision
+ *   3. Execute it (update ledger)
+ *   4. Write the fund bridge state file so the trading desk picks it up
+ *   5. Optionally transfer USDC if using a separate trading wallet
+ */
+export async function runRebalanceCycle(
+  db: Database,
+  walletAddress: Address,
+  account?: PrivateKeyAccount,
+): Promise<{
+  executed: boolean;
+  decision: AllocationDecision;
+  newAllocatedUsd: number;
+  error?: string;
+}> {
+  const decision = await computeAllocation(db, walletAddress);
+
+  if (decision.action === "hold" || decision.action === "disabled") {
+    logger.info(`Rebalance: ${decision.action} — ${decision.reason}`);
+    return { executed: false, decision, newAllocatedUsd: decision.currentAllocatedUsd };
+  }
+
+  // Execute the allocation
+  const result = executeAllocation(db, decision, walletAddress);
+  if (!result.success) {
+    logger.error(`Rebalance failed: ${result.error}`);
+    return { executed: false, decision, newAllocatedUsd: result.newAllocatedUsd, error: result.error };
+  }
+
+  // Write fund bridge state file for the trading desk to read
+  writeFundBridgeState(result.newAllocatedUsd, decision);
+
+  // If using a separate trading wallet, handle the on-chain USDC transfer
+  const config = loadAllocationConfig();
+  if (config.trading_wallet_address && account) {
+    const tradingAddr = config.trading_wallet_address as Address;
+
+    if (decision.action === "deploy") {
+      const txResult = await transferUSDC(account, tradingAddr, decision.amountUsd);
+      if (!txResult.success) {
+        logger.error(`On-chain deploy transfer failed: ${txResult.error}`);
+      } else {
+        logger.info(`Deployed $${decision.amountUsd.toFixed(2)} USDC to trading wallet (tx: ${txResult.txHash})`);
+      }
+    }
+    // For withdraw/clawback, the trading wallet would need to send back
+    // This requires the trading wallet's private key — out of scope for sub-account mode
+  }
+
+  logger.info(`Rebalance complete: ${decision.action} $${decision.amountUsd.toFixed(2)} — allocated: $${result.newAllocatedUsd.toFixed(2)}`);
+  return { executed: true, decision, newAllocatedUsd: result.newAllocatedUsd };
+}
+
+/**
+ * Revenue-triggered allocation check.
+ * Called by the gateway after successful x402 payment.
+ * Only acts if the new revenue pushes us past a deployment threshold.
+ */
+export async function onRevenueReceived(
+  db: Database,
+  walletAddress: Address,
+  amountCents: number,
+): Promise<void> {
+  const config = loadAllocationConfig();
+  if (!config.enabled) return;
+
+  const state = getAllocationState(db);
+
+  // Only trigger rebalance if we have no allocation yet (first deployment)
+  // or if accumulated revenue since last rebalance exceeds threshold
+  const balance = await getOnChainBalance(walletAddress);
+  if (!balance.ok) return;
+
+  const surplusUsd = Math.max(0, balance.balanceUsd - config.min_treasury_reserve_usd);
+  const dailyBurn = estimateDailyBurnCents(db);
+  const tier = getSurvivalTierFromBalance(balance.balanceCents, dailyBurn);
+  const tierGate = config.survival_tier_gates[tier] ?? 0;
+
+  if (tierGate <= 0) return; // Can't allocate in this tier
+
+  const potentialAllocation = surplusUsd * Math.min(tierGate, config.max_trading_allocation_pct);
+  const undeployedDelta = potentialAllocation - state.allocatedUsd;
+
+  // Deploy if delta exceeds minimum and it's been at least 1 hour since last rebalance
+  if (undeployedDelta >= config.min_allocation_usd) {
+    const lastRebalance = state.lastRebalanceAt;
+    const hourAgo = Date.now() - 3_600_000;
+    const lastRebalanceTime = lastRebalance ? new Date(lastRebalance).getTime() : 0;
+
+    if (lastRebalanceTime < hourAgo) {
+      logger.info(`Revenue trigger: $${(amountCents / 100).toFixed(2)} received, undeployed delta $${undeployedDelta.toFixed(2)} — running rebalance`);
+      await runRebalanceCycle(db, walletAddress);
+    }
+  }
+}
+
+// ── Fund Bridge State File Writer ───────────────────────────
+
+/**
+ * Write the fund bridge state file that the trading desk reads.
+ * This bridges the TypeScript treasury world with the MJS trading world.
+ */
+function writeFundBridgeState(allocatedUsd: number, decision: AllocationDecision): void {
+  try {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(thisDir, "..", "..");
+    const statePath = path.join(projectRoot, "inferred-analysis", "agents", "state", "fund-bridge-state.json");
+    const stateDir = path.dirname(statePath);
+
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+
+    // Read existing state and merge
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(statePath)) {
+      try {
+        existing = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+      } catch { /* start fresh */ }
+    }
+
+    const updated = {
+      ...existing,
+      allocatedCapitalUsd: allocatedUsd,
+      lastSyncTimestamp: new Date().toISOString(),
+      lastAllocationAction: decision.action,
+      lastAllocationReason: decision.reason,
+      survivalTier: decision.survivalTier,
+      treasuryBalanceUsd: decision.treasuryBalanceUsd,
+      version: 2,
+    };
+
+    if (allocatedUsd > 0 && !existing.deployedAtTimestamp) {
+      (updated as any).deployedAtTimestamp = new Date().toISOString();
+    }
+
+    fs.writeFileSync(statePath, JSON.stringify(updated, null, 2));
+    logger.info(`Fund bridge state written: allocated=$${allocatedUsd.toFixed(2)}`);
+  } catch (err) {
+    logger.warn(`Failed to write fund bridge state: ${err}`);
+  }
+}
+
+// ── Unified Financial Dashboard ─────────────────────────────
+
+export interface UnifiedDashboard {
+  timestamp: string;
+  treasuryBalanceUsd: number;
+  survivalTier: SurvivalTier;
+  dailyBurnUsd: number;
+  runwayDays: number;
+
+  // API Revenue Engine
+  api: {
+    revenueTodayCents: number;
+    expenseTodayCents: number;
+    netTodayCents: number;
+    revenueWeekCents: number;
+    expenseWeekCents: number;
+    netWeekCents: number;
+  };
+
+  // Trading Engine
+  trading: {
+    allocatedUsd: number;
+    realizedPnlUsd: number;
+    unrealizedPnlUsd: number;
+    totalPnlUsd: number;
+    roiPct: number;
+    highWaterMarkUsd: number;
+    maxDrawdownPct: number;
+    totalDeployedUsd: number;
+    totalHarvestedUsd: number;
+    totalClawbackUsd: number;
+  };
+
+  // Combined
+  combined: {
+    netTodayUsd: number;
+    netWeekUsd: number;
+    totalRevenueAllTimeUsd: number;
+    totalExpenseAllTimeUsd: number;
+    netAllTimeUsd: number;
+  };
+}
+
+export async function getUnifiedDashboard(
+  db: Database,
+  walletAddress: Address,
+): Promise<UnifiedDashboard> {
+  const balance = await getOnChainBalance(walletAddress);
+  const dailyBurnCents = estimateDailyBurnCents(db);
+  const tier = getSurvivalTierFromBalance(balance.balanceCents, dailyBurnCents);
+  const state = getAllocationState(db);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const dailyProfit = computeDailyNetProfit(db, today);
+  const weekPnl = computePnl(db, "week");
+  const allTimePnl = computePnl(db, "all");
+
+  const dailyBurnUsd = dailyBurnCents / 100;
+  const runwayDays = dailyBurnUsd > 0 ? balance.balanceUsd / dailyBurnUsd : 999;
+
+  const tradingTotal = state.tradingPnlUsd;
+  const tradingRoi = state.allocatedUsd > 0 ? (tradingTotal / state.allocatedUsd) * 100 : 0;
+
+  // Read fund bridge state for unrealized P&L breakdown
+  let unrealizedPnl = 0;
+  let realizedPnl = tradingTotal;
+  try {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(thisDir, "..", "..");
+    const bridgePath = path.join(projectRoot, "inferred-analysis", "agents", "state", "fund-bridge-state.json");
+    if (fs.existsSync(bridgePath)) {
+      const bridgeState = JSON.parse(fs.readFileSync(bridgePath, "utf-8"));
+      unrealizedPnl = bridgeState.cumulativeUnrealizedPnl ?? 0;
+      realizedPnl = bridgeState.cumulativeRealizedPnl ?? tradingTotal;
+    }
+  } catch { /* use defaults */ }
+
+  // Read max drawdown from fund bridge
+  let maxDrawdownPct = 0;
+  try {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(thisDir, "..", "..");
+    const bridgePath = path.join(projectRoot, "inferred-analysis", "agents", "state", "fund-bridge-state.json");
+    if (fs.existsSync(bridgePath)) {
+      const bridgeState = JSON.parse(fs.readFileSync(bridgePath, "utf-8"));
+      maxDrawdownPct = bridgeState.maxDrawdownPct ?? 0;
+    }
+  } catch { /* use default */ }
+
+  return {
+    timestamp: new Date().toISOString(),
+    treasuryBalanceUsd: balance.balanceUsd,
+    survivalTier: tier,
+    dailyBurnUsd,
+    runwayDays: Math.round(runwayDays),
+
+    api: {
+      revenueTodayCents: dailyProfit.revenueCents,
+      expenseTodayCents: dailyProfit.expenseCents,
+      netTodayCents: dailyProfit.netProfitCents,
+      revenueWeekCents: weekPnl.totalRevenueCents,
+      expenseWeekCents: weekPnl.totalExpenseCents,
+      netWeekCents: weekPnl.netCents,
+    },
+
+    trading: {
+      allocatedUsd: state.allocatedUsd,
+      realizedPnlUsd: realizedPnl,
+      unrealizedPnlUsd: unrealizedPnl,
+      totalPnlUsd: tradingTotal,
+      roiPct: Math.round(tradingRoi * 100) / 100,
+      highWaterMarkUsd: state.highWaterMarkUsd,
+      maxDrawdownPct: Math.round(maxDrawdownPct * 10000) / 10000,
+      totalDeployedUsd: state.totalDeployedUsd,
+      totalHarvestedUsd: state.totalHarvestedUsd,
+      totalClawbackUsd: state.totalClawbackUsd,
+    },
+
+    combined: {
+      netTodayUsd: dailyProfit.netProfitCents / 100 + tradingTotal,
+      netWeekUsd: weekPnl.netCents / 100 + tradingTotal,
+      totalRevenueAllTimeUsd: allTimePnl.totalRevenueCents / 100,
+      totalExpenseAllTimeUsd: allTimePnl.totalExpenseCents / 100,
+      netAllTimeUsd: allTimePnl.netCents / 100 + tradingTotal,
+    },
+  };
+}
+
+/**
+ * Format the unified dashboard as a human-readable report.
+ */
+export function formatDashboard(d: UnifiedDashboard): string {
+  return [
+    "══════════════════════════════════════════════════════",
+    "  UNIFIED FINANCIAL DASHBOARD",
+    `  ${d.timestamp}`,
+    "══════════════════════════════════════════════════════",
+    "",
+    `  Treasury:    $${d.treasuryBalanceUsd.toFixed(2)} USDC`,
+    `  Tier:        ${d.survivalTier.toUpperCase()}`,
+    `  Daily Burn:  $${d.dailyBurnUsd.toFixed(2)}/day`,
+    `  Runway:      ${d.runwayDays} days`,
+    "",
+    "  ── API Revenue Engine ──",
+    `  Today:       +$${(d.api.revenueTodayCents / 100).toFixed(2)} rev  -$${(d.api.expenseTodayCents / 100).toFixed(2)} exp  =$${(d.api.netTodayCents / 100).toFixed(2)} net`,
+    `  This Week:   +$${(d.api.revenueWeekCents / 100).toFixed(2)} rev  -$${(d.api.expenseWeekCents / 100).toFixed(2)} exp  =$${(d.api.netWeekCents / 100).toFixed(2)} net`,
+    "",
+    "  ── Trading Engine ──",
+    `  Allocated:   $${d.trading.allocatedUsd.toFixed(2)}`,
+    `  Realized:    $${d.trading.realizedPnlUsd.toFixed(2)}`,
+    `  Unrealized:  $${d.trading.unrealizedPnlUsd.toFixed(2)}`,
+    `  Total P&L:   $${d.trading.totalPnlUsd.toFixed(2)} (${d.trading.roiPct.toFixed(2)}% ROI)`,
+    `  HWM:         $${d.trading.highWaterMarkUsd.toFixed(2)}`,
+    `  Max DD:      ${(d.trading.maxDrawdownPct * 100).toFixed(2)}%`,
+    `  Deployed:    $${d.trading.totalDeployedUsd.toFixed(2)} total`,
+    `  Harvested:   $${d.trading.totalHarvestedUsd.toFixed(2)} total`,
+    `  Clawback:    $${d.trading.totalClawbackUsd.toFixed(2)} total`,
+    "",
+    "  ── Combined ──",
+    `  Net Today:     $${d.combined.netTodayUsd.toFixed(2)}`,
+    `  Net This Week: $${d.combined.netWeekUsd.toFixed(2)}`,
+    `  Net All Time:  $${d.combined.netAllTimeUsd.toFixed(2)}`,
+    "══════════════════════════════════════════════════════",
+  ].join("\n");
 }

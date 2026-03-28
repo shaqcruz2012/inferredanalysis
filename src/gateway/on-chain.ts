@@ -17,6 +17,7 @@ import {
 import { base } from "viem/chains";
 import { markNonceExecuted, markNonceFailed } from "./nonces.js";
 import { logRevenue } from "../local/accounting.js";
+import { onRevenueReceived } from "../treasury/capital-allocator.js";
 import type BetterSqlite3 from "better-sqlite3";
 
 type Database = BetterSqlite3.Database;
@@ -123,6 +124,11 @@ export async function executeTransferOnChain(
         txHash,
         nonce: params.nonce,
       },
+    });
+
+    // Notify capital allocator of new revenue (may trigger deployment)
+    onRevenueReceived(db, params.to as Address, params.amountCents).catch(() => {
+      // Non-critical: allocation check failure should not affect payment
     });
   } catch (err: any) {
     markNonceFailed(db, params.nonce, err?.message || String(err));

@@ -23,6 +23,7 @@
 import { readFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { getBridge } from "../shared/fund-bridge.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "..");
@@ -420,6 +421,20 @@ async function main() {
       console.error("No results.tsv found and no --strategies specified.");
       process.exit(1);
     }
+  }
+
+  // Check fund bridge for allocated capital (overrides --capital if available)
+  try {
+    const bridge = getBridge();
+    if (bridge.isCapitalAvailable()) {
+      const allocated = bridge.getAllocatedCapital();
+      console.log(`Fund Bridge: Active — using allocated capital $${allocated.toFixed(2)} (overrides --capital)`);
+      opts.capital = allocated;
+    } else {
+      console.log(`Fund Bridge: Inactive — using CLI capital $${opts.capital.toLocaleString()}`);
+    }
+  } catch {
+    console.log(`Fund Bridge: Not available — using CLI capital $${opts.capital.toLocaleString()}`);
   }
 
   // Load metrics from results.tsv

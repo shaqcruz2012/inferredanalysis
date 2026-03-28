@@ -443,21 +443,24 @@ async function main() {
       log(`Reconciliation error (non-fatal): ${reconErr.message}`);
     }
 
-    // ─── Fund Bridge: Report P&L & log allocation status ──
+    // ─── Fund Bridge: Full bidirectional sync ──────────────
     try {
       const bridge = getBridge();
-      if (bridge.isCapitalAvailable()) {
-        // Sync P&L from portfolio tracker to fund bridge state
-        const pnlSync = bridge.syncFromTracker({});
-        log(`Fund Bridge: allocated=$${bridge.getAllocatedCapital().toFixed(2)} P&L=$${pnlSync.totalPnl.toFixed(2)} ROI=${pnlSync.capitalReturn.toFixed(2)}% drawdown=${(pnlSync.drawdownPct * 100).toFixed(2)}%`);
 
-        if (bridge.isDrawdownBreached()) {
-          log(`FUND BRIDGE WARNING: Drawdown limit breached (${(pnlSync.drawdownPct * 100).toFixed(2)}%) — allocator should clawback`);
+      // Pull latest allocation from treasury's capital allocator
+      // AND sync trading P&L back — bidirectional in one call
+      const syncResult = bridge.fullSync({});
+
+      if (syncResult.allocatedCapital > 0) {
+        log(`Fund Bridge: allocated=$${syncResult.allocatedCapital.toFixed(2)} P&L=$${syncResult.totalPnl.toFixed(2)} ROI=${syncResult.capitalReturn.toFixed(2)}% drawdown=${(syncResult.drawdownPct * 100).toFixed(2)}%`);
+
+        if (syncResult.drawdownBreached) {
+          log(`FUND BRIDGE WARNING: Drawdown limit breached (${(syncResult.drawdownPct * 100).toFixed(2)}%) — allocator should clawback`);
         }
       } else {
         // Log once per full rotation that fund bridge is inactive
         if (cycleCount % RESEARCH_AGENTS.length === 1) {
-          log("Fund Bridge: inactive (no capital allocated — configure config/capital-allocation.json)");
+          log("Fund Bridge: no capital allocated — waiting for treasury deployment");
         }
       }
     } catch (bridgeErr) {

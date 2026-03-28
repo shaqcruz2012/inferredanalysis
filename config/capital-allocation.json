@@ -1,19 +1,19 @@
 {
   "enabled": true,
   "trading_wallet_address": "",
-  "min_treasury_reserve_usd": 50.00,
-  "max_trading_allocation_pct": 0.40,
-  "max_trading_allocation_usd": 10000.00,
-  "min_allocation_usd": 5.00,
-  "rebalance_interval_hours": 24,
+  "min_treasury_reserve_usd": 10.00,
+  "max_trading_allocation_pct": 0.60,
+  "max_trading_allocation_usd": 50000.00,
+  "min_allocation_usd": 2.00,
+  "rebalance_interval_hours": 6,
   "survival_tier_gates": {
-    "high": 0.40,
-    "normal": 0.25,
-    "low_compute": 0.00,
+    "high": 0.60,
+    "normal": 0.40,
+    "low_compute": 0.10,
     "critical": 0.00,
     "dead": 0.00
   },
   "drawdown_clawback_pct": 0.10,
   "profit_harvest_pct": 0.50,
-  "profit_harvest_threshold_usd": 1.00
+  "profit_harvest_threshold_usd": 0.50
 }

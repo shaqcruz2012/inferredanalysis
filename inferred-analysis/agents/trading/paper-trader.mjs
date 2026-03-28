@@ -516,8 +516,9 @@ async function runPaperTrading(opts) {
   tracker.syncFromBroker(positions, account.cash, account.equity);
   console.log(`  Portfolio tracker: synced (${positions.length} positions, NAV $${tracker.getNAV().toLocaleString()})`);
 
-  // ── Fund Bridge: Check allocated capital from treasury ──
+  // ── Fund Bridge: Pull latest allocation from treasury and check capital ──
   const bridge = getBridge();
+  bridge.pullFromAllocator(); // Sync with latest allocator decision
   const allocatedCapital = bridge.getAllocatedCapital();
   let effectiveEquity = equity;
 

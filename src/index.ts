@@ -32,6 +32,14 @@ import type { AutomatonIdentity, AgentState, Skill, SocialClientInterface } from
 import { DEFAULT_TREASURY_POLICY } from "./types.js";
 import { createLogger, setGlobalLogLevel } from "./observability/logger.js";
 import { getOnChainBalance } from "./local/treasury.js";
+import {
+  loadAllocationConfig,
+  initAllocationSchema,
+  getAllocationState,
+  runRebalanceCycle,
+  formatDashboard,
+  getUnifiedDashboard,
+} from "./treasury/capital-allocator.js";
 import { randomUUID } from "crypto";
 import { keccak256, toHex } from "viem";
 
@@ -167,6 +175,17 @@ Model:      ${config.inferenceModel}
 Version:    ${config.version}
 ========================
 `);
+
+  // Show unified financial dashboard if capital allocation is enabled
+  try {
+    const allocConfig = loadAllocationConfig();
+    if (allocConfig.enabled && config.walletAddress) {
+      const dashboard = await getUnifiedDashboard(db.raw, config.walletAddress as any);
+      logger.info(formatDashboard(dashboard));
+    }
+  } catch {
+    // Dashboard is non-critical for status display
+  }
 
   db.close();
 }
@@ -339,6 +358,36 @@ async function run(): Promise<void> {
     }
   } catch (err: any) {
     logger.warn(`[${new Date().toISOString()}] USDC balance check skipped: ${err.message}`);
+  }
+
+  // Phase 6: Initialize capital allocation system
+  try {
+    initAllocationSchema(db.raw);
+    const allocConfig = loadAllocationConfig();
+
+    if (allocConfig.enabled) {
+      const allocState = getAllocationState(db.raw);
+      logger.info(
+        `[${new Date().toISOString()}] Capital Allocator: ENABLED` +
+        ` | allocated=$${allocState.allocatedUsd.toFixed(2)}` +
+        ` | P&L=$${allocState.tradingPnlUsd.toFixed(2)}` +
+        ` | reserve=$${allocConfig.min_treasury_reserve_usd.toFixed(2)}`,
+      );
+
+      // Run initial rebalance check at startup
+      const rebalanceResult = await runRebalanceCycle(db.raw, account.address);
+      if (rebalanceResult.executed) {
+        logger.info(
+          `[${new Date().toISOString()}] Startup rebalance: ${rebalanceResult.decision.action}` +
+          ` $${rebalanceResult.decision.amountUsd.toFixed(2)}` +
+          ` → allocated: $${rebalanceResult.newAllocatedUsd.toFixed(2)}`,
+        );
+      }
+    } else {
+      logger.info(`[${new Date().toISOString()}] Capital Allocator: disabled`);
+    }
+  } catch (err: any) {
+    logger.warn(`[${new Date().toISOString()}] Capital allocator init: ${err.message}`);
   }
 
   // Start heartbeat daemon (Phase 1.1: DurableScheduler)

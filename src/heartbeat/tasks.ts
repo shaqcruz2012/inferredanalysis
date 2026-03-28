@@ -1253,6 +1253,127 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
       return { shouldWake: false };
     }
   },
+
+  // ── Capital Allocation Tasks ──────────────────────────────────────
+
+  /**
+   * Rebalance capital between treasury and trading desk.
+   * Runs on a configurable schedule (default: every 24 hours).
+   * Checks survival tier, surplus, and trading P&L to decide
+   * whether to deploy, withdraw, harvest, or clawback.
+   */
+  rebalance_capital: async (ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const { runRebalanceCycle, isRebalanceDue, loadAllocationConfig } =
+        await import("../treasury/capital-allocator.js");
+
+      const config = loadAllocationConfig();
+      if (!config.enabled) {
+        return { shouldWake: false };
+      }
+
+      // Use the heartbeat interval check
+      if (!shouldRunAtInterval(taskCtx, "rebalance_capital", config.rebalance_interval_hours * 3_600_000)) {
+        return { shouldWake: false };
+      }
+
+      const walletAddress = taskCtx.identity.address;
+      const result = await runRebalanceCycle(taskCtx.db.raw, walletAddress as any);
+
+      markTaskRan(taskCtx, "rebalance_capital");
+
+      if (result.executed) {
+        logger.info(`rebalance_capital: ${result.decision.action} $${result.decision.amountUsd.toFixed(2)} — allocated: $${result.newAllocatedUsd.toFixed(2)}`);
+        return {
+          shouldWake: result.decision.action === "clawback",
+          message: `Capital rebalanced: ${result.decision.action} $${result.decision.amountUsd.toFixed(2)}`,
+        };
+      }
+
+      return { shouldWake: false };
+    } catch (error) {
+      logger.error("rebalance_capital failed", error instanceof Error ? error : undefined);
+      return { shouldWake: false };
+    }
+  },
+
+  /**
+   * Check trading drawdown and trigger clawback if needed.
+   * Runs more frequently than rebalance (every 4 hours) as a safety net.
+   */
+  check_trading_drawdown: async (ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const { getAllocationState, loadAllocationConfig, runRebalanceCycle } =
+        await import("../treasury/capital-allocator.js");
+
+      const config = loadAllocationConfig();
+      if (!config.enabled) return { shouldWake: false };
+
+      if (!shouldRunAtInterval(taskCtx, "check_trading_drawdown", 4 * 3_600_000)) {
+        return { shouldWake: false };
+      }
+
+      const state = getAllocationState(taskCtx.db.raw);
+      if (state.allocatedUsd <= 0) return { shouldWake: false };
+
+      // Check drawdown
+      if (state.highWaterMarkUsd > 0) {
+        const currentValue = state.allocatedUsd + state.tradingPnlUsd;
+        const drawdownPct = (state.highWaterMarkUsd - currentValue) / state.highWaterMarkUsd;
+
+        if (drawdownPct >= config.drawdown_clawback_pct) {
+          logger.warn(`Trading drawdown ${(drawdownPct * 100).toFixed(1)}% — triggering emergency clawback`);
+          const walletAddress = taskCtx.identity.address;
+          await runRebalanceCycle(taskCtx.db.raw, walletAddress as any);
+
+          markTaskRan(taskCtx, "check_trading_drawdown");
+          return {
+            shouldWake: true,
+            message: `Trading drawdown alert: ${(drawdownPct * 100).toFixed(1)}% — clawback triggered`,
+          };
+        }
+      }
+
+      markTaskRan(taskCtx, "check_trading_drawdown");
+      return { shouldWake: false };
+    } catch (error) {
+      logger.error("check_trading_drawdown failed", error instanceof Error ? error : undefined);
+      return { shouldWake: false };
+    }
+  },
+
+  /**
+   * Generate and store the unified financial dashboard.
+   * Combines API revenue + trading P&L for full visibility.
+   */
+  unified_dashboard: async (ctx: TickContext, taskCtx: HeartbeatLegacyContext) => {
+    try {
+      const { getUnifiedDashboard, formatDashboard, loadAllocationConfig } =
+        await import("../treasury/capital-allocator.js");
+
+      const config = loadAllocationConfig();
+      if (!config.enabled) return { shouldWake: false };
+
+      if (!shouldRunAtInterval(taskCtx, "unified_dashboard", 3_600_000)) {
+        return { shouldWake: false };
+      }
+
+      const walletAddress = taskCtx.identity.address;
+      const dashboard = await getUnifiedDashboard(taskCtx.db.raw, walletAddress as any);
+
+      // Store for agent access and external monitoring
+      taskCtx.db.setKV("unified_dashboard", JSON.stringify(dashboard));
+      taskCtx.db.setKV("unified_dashboard_formatted", formatDashboard(dashboard));
+
+      markTaskRan(taskCtx, "unified_dashboard");
+      logger.info(`Unified dashboard: treasury=$${dashboard.treasuryBalanceUsd.toFixed(2)} allocated=$${dashboard.trading.allocatedUsd.toFixed(2)} combined_net=$${dashboard.combined.netAllTimeUsd.toFixed(2)}`);
+
+      return { shouldWake: false };
+    } catch (error) {
+      logger.error("unified_dashboard failed", error instanceof Error ? error : undefined);
+      return { shouldWake: false };
+    }
+  },
 };
 
 function tierToInt(tier: SurvivalTier): number {
