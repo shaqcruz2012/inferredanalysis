@@ -51,3 +51,8 @@ lerna-debug.log*
 # Automaton
 .automaton/wallet.json
 .automaton/state.db
+
+# Agent runtime state
+inferred-analysis/agents/state/monitor-state.json
+inferred-analysis/agents/state/fund-bridge-state.json
+inferred-analysis/agents/outputs/
