@@ -50,13 +50,13 @@ export type { ServiceConfig, HealthCheckResult, HealthReport } from "./service-h
 
 export {
   // deploy-manager
-  deployManagerSkill,
+  SKILL_METADATA as deployManagerSkill,
   DeployManager,
 } from "./deploy-manager.js";
 
 export {
   // alerting
-  alertingSkill,
+  SKILL_METADATA as alertingSkill,
   AlertingManager,
 } from "./alerting.js";
 

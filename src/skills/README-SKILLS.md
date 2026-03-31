@@ -7,24 +7,28 @@ Programmatic skills for deployment management, service monitoring, revenue track
 ### revenue-tracker
 **Category:** revenue
 
-Track daily revenue, expenses, net P&L, and conversion rates.
+Track daily revenue, expenses, net P&L, and conversion rates. Records paid and free-tier usage events for accurate conversion analytics.
 
-**Commands:**
-- `revenue:summary` — Daily revenue summary (gross $, expenses, net P&L)
-- `revenue:conversion` — Free-to-paid conversion rate
-- `revenue:trend` — Revenue trend over last 7 days
-- `revenue:customers` — Unique customers served today
+**Key Functions:**
+- `recordRevenue(db, service, amountCents, currency, customerHash)` — Record a paid service call
+- `recordFreeUsage(db, service, customerHash)` — Record a free-tier usage event
+- `getDailyRevenue(db, date?)` — Get revenue for a specific date
+- `getServiceBreakdown(db, period)` — Revenue broken down by service
+- `getConversionRate(db, service, period)` — Free-to-paid conversion rate
+- `generateReport(db)` — Full P&L report with expenses and conversion data
 
-**Configuration:** None required. Reads from existing `spend_tracker` and payment tables in the automaton database.
+**Configuration:** None required. Creates its own SQLite tables (`revenue_tracking`, `service_usage`) on first use. Reads expense data from the existing `expense_events` table.
 
 **Example:**
 ```
 revenue:summary
 # Output:
-# Gross Revenue: $4.20
-# Expenses:      $1.85
-# Net P&L:       $2.35
-# Customers:     17
+# ═══════════════════════════════════════
+#   REVENUE & P&L REPORT — 2026-03-31
+# ═══════════════════════════════════════
+#   Today:  $4.20 (17 txns)
+#   Week:   $28.50 (112 txns, 43 customers)
+#   Month:  $89.25 (380 txns, 127 customers)
 ```
 
 ---
@@ -32,23 +36,32 @@ revenue:summary
 ### service-health
 **Category:** monitoring
 
-Monitor API endpoint health, uptime, and response latency.
+Monitor API endpoint health, uptime, and response latency. Detects consecutive failures and generates alerts on service degradation or recovery.
 
-**Commands:**
-- `health:check` — Run health checks on all registered endpoints
-- `health:status` — Current status of all services
-- `health:latency` — p50/p95/p99 response latency
-- `health:uptime` — Uptime percentage over last 24h
+**Key Functions:**
+- `checkHealth(serviceUrl)` — Check a single endpoint
+- `checkAllServices(db, services?)` — Check all services, store results, generate alerts
+- `getUptime(db, service, period)` — Uptime percentage (period: `1h`, `24h`, `7d`, `30d`)
+- `getAlerts(db, since?)` — Get alerts from the last 24h
+- `getStatusDashboard(db, services?)` — Text-based status dashboard
 
-**Configuration:** Endpoints are auto-discovered from the heartbeat config and registered services.
+**Configuration:** Endpoints are auto-discovered from `DEFAULT_SERVICES` in the module. Override by passing a custom `ServiceConfig[]` to `checkAllServices()`.
+
+**Default monitored services:**
+- Landing Page: `http://localhost:3000/health`
+- URL Summarizer: `http://localhost:9003/health`
+- x402 API: `http://localhost:9402/health`
+- Gateway: `http://localhost:7402/health`
+- Invoice Parser: `http://localhost:8000/health`
 
 **Example:**
 ```
 health:check
 # Output:
-# /api/summarize  — UP (120ms)
-# /api/analyze    — UP (340ms)
-# /api/health     — UP (15ms)
+# Service              Status    Latency     Uptime 24h  Uptime 7d   Failures
+# Landing Page         UP        45ms        100%        99.8%       0
+# URL Summarizer       UP        120ms       99.9%       99.5%       0
+# x402 API             DOWN      --          95.2%       98.1%       5
 ```
 
 ---
@@ -56,15 +69,18 @@ health:check
 ### deploy-manager
 **Category:** deployment
 
-Manage deployments, rollbacks, and blue-green switches.
+Track deployment state per service, store deployment history, provide rollback information, and report deployment frequency and success rate.
 
-**Commands:**
-- `deploy:status` — Current deployment status
-- `deploy:promote` — Promote staging to production
-- `deploy:rollback` — Roll back to previous deployment
-- `deploy:history` — Deployment history
+**Key Functions:**
+- `new DeployManager(dbPath)` — Create a manager instance
+- `manager.recordDeployment(service, version, commitSha, status)` — Log a deploy
+- `manager.getDeploymentHistory(service, limit?)` — Past deployments
+- `manager.getCurrentVersions()` — Map of service to current version
+- `manager.getDeploymentStats(period)` — Deploy counts, success rate, frequency
+- `manager.generateDeployReport()` — Full markdown status report
+- `manager.getRollbackTarget(service)` — Previous successful version
 
-**Configuration:** None required. Tracks deployment state in the automaton database.
+**Configuration:** None required. Creates its own SQLite database from the provided `dbPath`.
 
 **Example:**
 ```
@@ -73,6 +89,7 @@ deploy:status
 # Active: v0.2.1 (deployed 2h ago)
 # Previous: v0.2.0 (available for rollback)
 # Health: all checks passing
+# Success rate (30d): 94.1% (16/17 deploys)
 ```
 
 ---
@@ -80,21 +97,21 @@ deploy:status
 ### alerting
 **Category:** monitoring
 
-Configure and dispatch alerts for service issues and revenue drops.
+Multi-channel alerting system with rate limiting, alert history, muting, and configurable thresholds. Supports console, webhook, and Telegram channels.
 
-**Commands:**
-- `alert:list` — List all configured alert rules
-- `alert:add <condition> <action>` — Add a new alert rule
-- `alert:remove <id>` — Remove an alert rule
-- `alert:history` — Recent alert firings
-- `alert:test <id>` — Test-fire an alert
+**Key Functions:**
+- `new AlertingManager()` — Create a manager instance
+- `manager.sendAlert(level, message, channel?)` — Dispatch an alert (levels: `info`, `warning`, `critical`)
+- `manager.configureChannel({ type, config })` — Set up webhook or Telegram
+- `manager.muteAlert(pattern, durationMs)` — Suppress matching alerts temporarily
+- `manager.getAlertHistory(since?)` — Retrieve past alerts
 
-**Configuration:** Alert rules are stored in the database. Built-in conditions: `endpoint_down`, `high_latency`, `revenue_drop`, `error_spike`. Actions: `log`, `webhook`, `social_post`.
+**Configuration:** Configure channels via `configureChannel()`. Webhook channels need a `url`. Telegram channels need `botToken` and `chatId`. Built-in rate limiting: 60s dedup, 10 alerts/min max. Critical alerts auto-broadcast to all channels.
 
 **Example:**
 ```
 alert:add endpoint_down log
-# Output: Alert rule #1 created: endpoint_down -> log (cooldown: 15m)
+# Output: Alert rule created: endpoint_down -> log (cooldown: 15m)
 
 alert:list
 # Output:
@@ -107,30 +124,34 @@ alert:list
 ### auto-scaler
 **Category:** deployment
 
-Auto-scale inference resources based on request load and queue depth.
+Track request volume per service over time windows, detect traffic spikes, and recommend scaling actions. All data persisted in SQLite.
 
-**Commands:**
-- `scale:status` — Current scaling state
-- `scale:config` — Scaling configuration (min/max/thresholds)
-- `scale:set-min <n>` — Set minimum instances
-- `scale:set-max <n>` — Set maximum instances
-- `scale:history` — Scaling events history
+**Key Functions:**
+- `recordRequest(db, service, latencyMs, statusCode, error?)` — Record an incoming request
+- `getTrafficStats(db, service, windowMinutes)` — RPM, RPS, avg/p99 latency, error rate
+- `detectAnomalies(db, service)` — Detect traffic spikes vs baseline
+- `getScalingRecommendation(db, service)` — Scale-up/down/hold recommendation with reason
+- `getResourceUtilization(db, service)` — Estimated CPU/memory/connection usage
+- `generateTrafficReport(db)` — Full traffic report across all services
+- `pruneOldRecords(db)` — Clean up old request records
 
 **Configuration:**
-- Default min instances: 1
-- Default max instances: 5
 - Scale-up threshold: queue depth > 10 or p95 latency > 2s
 - Scale-down threshold: queue depth < 2 and p95 latency < 500ms for 5 min
 - Cooldown: 3 minutes between scaling events
+- Call `pruneOldRecords()` periodically (e.g., every heartbeat cycle) to prevent unbounded growth
 
 **Example:**
 ```
 scale:status
 # Output:
-# Instances: 2/5 (min: 1, max: 5)
-# Queue depth: 3
-# p95 latency: 450ms
-# Last scale event: scale-up 45m ago
+# === Traffic Report ===
+# --- url-summarizer ---
+#   Baseline (30m): 42.3 RPM, 1269 total requests
+#   Recent (5m): 58.1 RPM, 291 requests
+#   Avg Latency: 180ms | P99: 1200ms
+#   Error Rate: 0.3%
+#   Recommendation: HOLD — traffic within normal range
 ```
 
 ---
@@ -138,23 +159,29 @@ scale:status
 ### pricing-optimizer
 **Category:** revenue
 
-Optimize pricing based on conversion data and competitor analysis.
+Analyze conversion data at each price point, suggest pricing adjustments, run A/B tests, and track competitor rates.
 
-**Commands:**
-- `pricing:analyze` — Analyze current pricing vs conversion rates
-- `pricing:suggest` — Suggest pricing changes based on data
-- `pricing:set <skill> <price>` — Update price for a skill
-- `pricing:competitors` — Competitor pricing comparison
-- `pricing:ab-test <skill> <priceA> <priceB>` — Start an A/B price test
+**Key Functions:**
+- `recordPricePoint(db, service, priceCents, conversionRate, sampleSize)` — Record a price observation
+- `analyzePricing(db)` — Analyze all services and get pricing suggestions
+- `startABTest(db, service, priceACents, priceBCents)` — Start a 48h+ A/B price test
+- `getActiveABTests(db)` — List running A/B tests
+- `recordCompetitorPrice(db, competitor, service, priceCents)` — Record a competitor's price
+- `getCompetitorPrices(db, service)` — Get competitor prices
+- `generatePricingReport(db)` — Full pricing analysis report
 
-**Configuration:** None required. Reads pricing and conversion data from the database. Competitor data is fetched via the Perplexity API if `perplexityApiKey` is configured.
+**Configuration:** None required. Creates its own SQLite tables (`pricing_history`, `pricing_ab_tests`, `competitor_prices`) on first use. Pricing rules: suggest decrease when conversion < 5%, suggest increase when conversion > 30% (max +20% per adjustment), target 30-50% below competitor rates.
 
 **Example:**
 ```
 pricing:analyze
 # Output:
-# url-summarizer: $0.25/call, 8.2% conversion (healthy)
-# sentiment-analysis: $0.50/call, 2.1% conversion (too high — suggest $0.30)
+# ═══ Pricing Analysis Report ═══
+# ── Current Prices ──
+#   url-summarizer: $0.25/call, 8.2% conversion (n=340)
+#   sentiment-analysis: $0.50/call, 2.1% conversion (n=95)
+# ── Suggestions ──
+#   sentiment-analysis: $0.50 → $0.35 — Conversion rate 2.1% is below 5% threshold
 ```
 
 ---
@@ -162,28 +189,31 @@ pricing:analyze
 ### customer-tracker
 **Category:** analytics
 
-Track customer lifecycle, usage patterns, and churn risk.
+Track customer lifecycle from free tier through paid, calculate Customer Lifetime Value, identify churn risk, and report on usage patterns.
 
-**Commands:**
-- `customers:active` — List active customers (last 24h)
-- `customers:trial` — List users on free tier approaching limits
-- `customers:churn-risk` — Identify customers at risk of churning
-- `customers:usage <ip>` — Usage history for a customer
-- `customers:nudge` — Generate conversion nudge for trial users at limit
+**Key Functions:**
+- `recordCustomerActivity(db, customerHash, service, action, paid, amountCents)` — Record activity
+- `getCustomerSegments(db)` — Customers grouped by segment (free/trial/paid/churned)
+- `getCustomerJourney(db, customerHash)` — Full activity history for a customer
+- `getChurnRisk(db)` — Customers at risk of churning (sorted by risk score)
+- `getCLV(db, segment?)` — Customer lifetime value statistics (avg, median, total)
+- `generateCustomerReport(db)` — Full customer analytics report
 
-**Configuration:** None required. Uses the free-tier tracking data from `src/skills/revenue/free-tier.ts`.
+**Configuration:** None required. Creates its own SQLite tables on first use. Uses the free-tier tracking data from `src/skills/revenue/free-tier.ts`.
 
 **Example:**
 ```
 customers:trial
 # Output:
-# 192.168.1.42  — 2/3 free calls used (candidate for nudge)
-# 10.0.0.17     — 3/3 free calls used (ready for conversion)
-
-customers:nudge
-# Output:
-# "You've used all 3 free calls today. Unlock unlimited access for $0.25/call.
-#  No signup required — just add a payment method: [url]"
+# ═══ Customer Report ═══
+# ── Segment Breakdown ──
+#   Free:    42
+#   Trial:   8
+#   Paid:    15
+#   Churned: 3
+# ── Conversion Funnel ──
+#   Free -> Trial+Paid: 35.4%
+#   Free -> Paid:       23.1%
 ```
 
 ---
@@ -191,29 +221,31 @@ customers:nudge
 ### log-aggregator
 **Category:** analytics
 
-Aggregate, search, and analyze logs across all services.
+Centralized log collection, search, and analysis across all services. Detects error patterns and generates log summaries.
 
-**Commands:**
-- `logs:tail [service]` — Show recent logs (optionally filtered by service)
-- `logs:search <query>` — Search logs by keyword or pattern
-- `logs:errors` — All error-level logs from last hour
-- `logs:stats` — Log volume and error rate statistics
-- `logs:export <start> <end>` — Export logs for a time range
+**Key Functions:**
+- `log(db, service, level, message, metadata?)` — Store a structured log entry
+- `query(db, { service?, level?, pattern?, since?, until?, limit? })` — Search logs
+- `getErrorSummary(db, since)` — Error counts grouped by service and message
+- `getRecentLogs(db, limit?)` — Most recent log entries
+- `generateLogReport(db, period)` — Log volume and error rate report
 
-**Configuration:** None required. Reads from the automaton's logger output (see `src/observability/logger.ts`). Logs are retained for 7 days.
+**Configuration:** None required. Creates its own SQLite table (`aggregated_logs`) on first use. Logs are retained for 7 days.
 
 **Example:**
 ```
 logs:errors
 # Output:
-# [2026-03-31T14:22:01Z] [ERROR] [inference] Token limit exceeded for request abc123
-# [2026-03-31T14:18:44Z] [ERROR] [heartbeat] Conway API timeout after 30s
-
-logs:stats
-# Output:
-# Last hour: 1,247 entries
-# Error rate: 0.8% (10 errors)
-# Top service: inference (62%)
+# ═══ Log Aggregation Report ═══
+# Period: 2026-03-31T13:00:00Z to now
+# Total log entries: 1,247
+# ── By Level ──
+#   error: 10 (0.8%)
+#   warn:  23 (1.8%)
+#   info:  1,189 (95.3%)
+# ── Top Errors ──
+#   [inference] Token limit exceeded: 4 occurrences
+#   [heartbeat] Conway API timeout: 3 occurrences
 ```
 
 ## Integration
@@ -235,3 +267,16 @@ const allSkills = [...fileSkills, ...deploymentSkills];
 ```
 
 The returned `Skill[]` array is fully compatible with `runAgentLoop({ skills })` and `getActiveSkillInstructions()`.
+
+Individual skill functions can also be imported directly:
+
+```typescript
+import {
+  recordRevenue,
+  generateRevenueReport,
+  checkAllServices,
+  analyzePricing,
+  recordCustomerActivity,
+  aggregateLog,
+} from "./skills/deployment-skills.js";
+```
