@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npx esbuild src/gateway/server.ts --bundle --platform=node --outfile=dist/server.js --format=esm --packages=external"]
+
+[start]
+cmd = "node dist/server.js"

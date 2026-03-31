@@ -1,0 +1,60 @@
+# Caddyfile — reverse proxy for Datchi services
+#
+# Replace "datchi.example.com" with the actual production domain.
+# Caddy will auto-provision TLS via Let's Encrypt when a real domain is used.
+
+datchi.example.com {
+	# Landing page — root and static marketing pages
+	handle / {
+		reverse_proxy landing-page:3000
+	}
+	handle /health {
+		reverse_proxy landing-page:3000
+	}
+	handle /api-docs {
+		reverse_proxy landing-page:3000
+	}
+
+	# Gateway — x402 paid endpoints (summarize, brief, analyze, etc.)
+	handle /summarize {
+		reverse_proxy gateway:7402
+	}
+	handle /summarize-url {
+		reverse_proxy gateway:7402
+	}
+	handle /brief {
+		reverse_proxy gateway:7402
+	}
+	handle /brief-premium {
+		reverse_proxy gateway:7402
+	}
+	handle /analyze {
+		reverse_proxy gateway:7402
+	}
+	handle /trustcheck {
+		reverse_proxy gateway:7402
+	}
+	handle /info {
+		reverse_proxy gateway:7402
+	}
+	handle /pricing {
+		reverse_proxy gateway:7402
+	}
+
+	# Invoice parser
+	handle /parse {
+		reverse_proxy invoice-parser:8000
+	}
+
+	# URL Summarizer direct access (internal/debug)
+	handle /url-summarizer/* {
+		uri strip_prefix /url-summarizer
+		reverse_proxy url-summarizer:9003
+	}
+
+	# x402-api direct access (internal/debug)
+	handle /x402/* {
+		uri strip_prefix /x402
+		reverse_proxy x402-api:9402
+	}
+}

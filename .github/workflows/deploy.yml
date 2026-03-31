@@ -1,0 +1,48 @@
+name: Build & Deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  build-services:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - { name: url-summarizer, path: services/url-summarizer }
+          - { name: x402-api, path: services/x402-api }
+          - { name: landing-page, path: services/landing-page }
+          - { name: invoice-parser, path: app }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t ${{ matrix.service.name }}:${{ github.sha }} ./${{ matrix.service.path }}
+
+  health-check:
+    needs: build-services
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run health checks
+        run: |
+          chmod +x scripts/health-monitor.sh
+          echo "Health check placeholder - configure RAILWAY_URLs in secrets"

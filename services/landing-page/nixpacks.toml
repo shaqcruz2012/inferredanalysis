@@ -1,0 +1,9 @@
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+providers = ["node"]
+
+[phases.build]
+# No build phase needed — zero dependencies
+
+[start]
+cmd = "node server.js"
