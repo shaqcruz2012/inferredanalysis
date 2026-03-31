@@ -10,6 +10,7 @@
  */
 
 import type BetterSqlite3 from "better-sqlite3";
+import type { Skill } from "../types.js";
 import { createLogger } from "../observability/logger.js";
 
 type Database = BetterSqlite3.Database;
@@ -348,8 +349,8 @@ export function getResourceUtilization(
 
   // Heuristic: estimate CPU from RPS * avg latency
   // If each request occupies a core for latencyMs, then:
-  //   concurrent_requests ≈ rps * (avgLatency / 1000)
-  //   cpu% ≈ concurrent_requests / assumed_cores * 100
+  //   concurrent_requests ~ rps * (avgLatency / 1000)
+  //   cpu% ~ concurrent_requests / assumed_cores * 100
   const assumedCores = 4;
   const concurrentRequests = stats.rps * (stats.avgLatency / 1000);
   const estimatedCpuPercent = Math.min(100, (concurrentRequests / assumedCores) * 100);
@@ -378,13 +379,21 @@ export function generateTrafficReport(db: Database): string {
     return "No traffic data recorded yet.";
   }
 
-  const lines: string[] = ["=== Traffic Report ===", ""];
+  const lines: string[] = [];
+  const now = new Date().toISOString();
+
+  lines.push("=======================================");
+  lines.push("  AUTO-SCALER TRAFFIC REPORT");
+  lines.push(`  Generated: ${now}`);
+  lines.push("=======================================");
+  lines.push("");
 
   for (const { service } of services) {
     const stats = getTrafficStats(db, service, BASELINE_WINDOW_MINUTES);
     const recentStats = getTrafficStats(db, service, SPIKE_WINDOW_MINUTES);
     const utilization = getResourceUtilization(db, service);
     const recommendation = getScalingRecommendation(db, service);
+    const anomalies = detectAnomalies(db, service);
 
     lines.push(`--- ${service} ---`);
     lines.push(`  Baseline (${BASELINE_WINDOW_MINUTES}m): ${stats.rpm.toFixed(1)} RPM, ${stats.totalRequests} total requests`);
@@ -393,9 +402,19 @@ export function generateTrafficReport(db: Database): string {
     lines.push(`  Error Rate: ${(stats.errorRate * 100).toFixed(1)}%`);
     lines.push(`  Est. CPU: ${utilization.estimatedCpuPercent}% | Est. Memory: ${utilization.estimatedMemoryPercent}%`);
     lines.push(`  Active Connections (est.): ${utilization.activeConnections}`);
-    lines.push(`  Recommendation: ${recommendation.action.toUpperCase()} — ${recommendation.reason}`);
+    lines.push(`  Recommendation: ${recommendation.action.toUpperCase()} -- ${recommendation.reason}`);
+
+    if (anomalies.length > 0) {
+      lines.push("  Anomalies:");
+      for (const a of anomalies) {
+        lines.push(`    [${a.severity.toUpperCase()}] ${a.message}`);
+      }
+    }
+
     lines.push("");
   }
+
+  lines.push("=======================================");
 
   return lines.join("\n");
 }
@@ -414,3 +433,43 @@ export function pruneOldRecords(db: Database): number {
   }
   return result.changes;
 }
+
+// ─── Skill Export ───────────────────────────────────────────────
+
+/**
+ * The auto-scaler skill definition, conforming to the Skill interface.
+ */
+export const autoScalerSkill: Skill = {
+  name: "auto-scaler",
+  description:
+    "Tracks request volume per service over time windows, calculates RPM/RPS trends, " +
+    "detects traffic spikes (>2x baseline), recommends scaling actions (scale-up/scale-down/none), " +
+    "and estimates resource utilization. " +
+    "Revenue nexus: keeps APIs alive under load and reduces waste during low traffic.",
+  autoActivate: true,
+  instructions: [
+    "Use this skill to monitor traffic and get scaling recommendations.",
+    "",
+    "Available functions:",
+    "- recordRequest(db, service, latencyMs, statusCode): Record every API request for tracking",
+    "- getTrafficStats(db, service, windowMinutes): Get RPM, avg latency, p99 latency, error rate",
+    "- detectAnomalies(db, service): Detect spikes (>2x baseline), error surges, latency degradation",
+    "- getScalingRecommendation(db, service): Get scaling action (scale-up / scale-down / none) with reason",
+    "- getResourceUtilization(db, service): Estimate CPU%, memory%, active connections",
+    "- generateTrafficReport(db): Full text report across all services",
+    "- pruneOldRecords(db): Remove records older than 24h to control DB size",
+    "- initAutoScalerSchema(db): Initialize SQLite tables (safe to call multiple times)",
+    "",
+    "Thresholds:",
+    "- Spike: >2x baseline RPM (60m window vs 5m window)",
+    "- Error surge: >10% error rate",
+    "- Latency degradation: p99 >3x baseline",
+    "- Scale-down: RPM <25% of baseline",
+  ].join("\n"),
+  source: "builtin",
+  path: "src/skills/auto-scaler.ts",
+  enabled: true,
+  installedAt: new Date().toISOString(),
+};
+
+export default autoScalerSkill;
